@@ -1,61 +1,137 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
+    <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>OmniLocation Control</title>
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.10.0/font/bootstrap-icons.css" rel="stylesheet">
-    <!-- Leaflet CSS -->
-    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.10.0/font/bootstrap-icons.css">
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
     <style>
-        .status-running { color: green; font-weight: bold; }
-        .status-stopped { color: gray; }
-        .device-name { font-weight: 500; }
-        .real-name { font-size: 0.85em; color: #6c757d; }
-        .rename-btn { cursor: pointer; color: #0d6efd; margin-left: 5px; opacity: 0.6; }
-        .rename-btn:hover { opacity: 1; }
-        .meta-value { font-weight: bold; color: #495057; }
-        #map { height: 400px; width: 100%; border-radius: 8px; border: 1px solid #dee2e6; }
-        
+        .status-running {
+            color: green;
+            font-weight: bold;
+        }
+
+        .status-stopped {
+            color: gray;
+        }
+
+        .device-name {
+            font-weight: 500;
+        }
+
+        .real-name {
+            font-size: 0.85em;
+            color: #6c757d;
+        }
+
+        .rename-btn {
+            cursor: pointer;
+            color: #0d6efd;
+            margin-left: 5px;
+            opacity: 0.6;
+        }
+
+        .rename-btn:hover {
+            opacity: 1;
+        }
+
+        .meta-value {
+            font-weight: bold;
+            color: #495057;
+        }
+
+        #map {
+            height: 400px;
+            width: 100%;
+            border-radius: 8px;
+            border: 1px solid #dee2e6;
+        }
+
+        /* New class for checkbox column width */
+        .th-checkbox {
+            width: 40px;
+        }
+
         /* Mobile responsive styles */
-        .device-badges { display: none; margin-top: 5px; }
-        
+        .device-badges {
+            display: none;
+            margin-top: 5px;
+        }
+
         /* Customize file input button to match form controls */
         .file-select-btn {
             background-color: #fff;
             border-color: #dee2e6;
             color: #495057;
         }
+
         .file-select-btn:hover {
             background-color: #f8f9fa;
             border-color: #dee2e6;
             color: #495057;
         }
-        
+
+        .device-id {
+            font-family: monospace;
+        }
+
         @media (max-width: 768px) {
             /* Hide type and connection columns on mobile */
-            .device-type-col, .connection-col { display: none; }
+            .device-type-col, .connection-col {
+                display: none;
+            }
+
             /* Show badges under device name on mobile */
-            .device-badges { display: block; }
+            .device-badges {
+                display: block;
+            }
+
             /* Make device name more prominent */
-            .device-name { font-size: 1.1em; font-weight: 600; }
+            .device-name {
+                font-size: 1.1em;
+                font-weight: 600;
+            }
+
             /* Reduce prominence of secondary info */
-            .device-id { font-size: 0.65em !important; opacity: 0.6; margin-top: 6px; }
-            .real-name { font-size: 0.75em !important; opacity: 0.7; margin-top: 2px; }
+            .device-id {
+                font-size: 0.65em !important;
+                opacity: 0.6;
+                margin-top: 6px;
+            }
+
+            .real-name {
+                font-size: 0.75em !important;
+                opacity: 0.7;
+                margin-top: 2px;
+            }
+
             /* Smaller and lighter badges on mobile */
-            .device-badges { margin-top: 4px; }
-            .device-badges .badge { 
-                font-size: 0.7em; 
-                padding: 0.2em 0.4em; 
+            .device-badges {
+                margin-top: 4px;
+            }
+
+            .device-badges .badge {
+                font-size: 0.7em;
+                padding: 0.2em 0.4em;
                 opacity: 0.85;
                 font-weight: normal;
             }
+
             /* Adjust card padding */
-            .card-body { padding: 0.75rem; }
+            .card-body {
+                padding: 0.75rem;
+            }
+
             /* Smaller title */
-            h1 { font-size: 1.5rem; }
-            h5 { font-size: 1rem; }
+            h1 {
+                font-size: 1.5rem;
+            }
+
+            h5 {
+                font-size: 1rem;
+            }
         }
     </style>
 </head>
@@ -70,21 +146,21 @@
             <div class="card h-100">
                 <div class="card-header d-flex justify-content-between align-items-center">
                     <h5 class="mb-0">Device Pool</h5>
-                    <button class="btn btn-sm btn-outline-primary" onclick="refreshDevices()">Scan</button>
+                    <button class="btn btn-sm btn-outline-primary" id="refresh-devices-btn">Scan</button>
                 </div>
                 <div class="card-body">
                     <div class="table-responsive">
                         <table class="table table-hover align-middle">
                             <thead>
-                                <tr>
-                                    <th style="width: 40px"><input type="checkbox" id="selectAll" onclick="toggleSelectAll()"></th>
-                                    <th>Name</th>
-                                    <th class="device-type-col">Device Type</th>
-                                    <th class="connection-col">Connection</th>
-                                </tr>
+                            <tr>
+                                <th class="th-checkbox"><input type="checkbox" id="select-all-checkbox"></th>
+                                <th>Name</th>
+                                <th class="device-type-col">Device Type</th>
+                                <th class="connection-col">Connection</th>
+                            </tr>
                             </thead>
-                            <tbody id="deviceList">
-                                <!-- Devices will be injected here -->
+                            <tbody id="device-list">
+                            <!-- Devices will be injected here -->
                             </tbody>
                         </table>
                     </div>
@@ -101,83 +177,90 @@
                 <div class="card-body">
                     <!-- File Upload -->
                     <div class="mb-3">
-                        <label class="form-label">Upload GPX</label>
+                        <label class="form-label" for="gpx-upload-input">Upload GPX</label>
                         <div class="input-group">
-                            <input type="file" class="form-control d-none" id="gpxUpload" accept=".gpx" onchange="updateFileInputLabel()">
-                            <button class="btn file-select-btn flex-grow-1 text-start rounded-start" type="button" onclick="document.getElementById('gpxUpload').click()">
+                            <input type="file" class="form-control d-none" id="gpx-upload-input" accept=".gpx">
+                            <label for="gpx-upload-input" class="btn file-select-btn flex-grow-1 text-start rounded-start"
+                                   style="cursor: pointer;">
                                 <i class="bi bi-file-earmark-arrow-up me-2"></i>
-                                <span id="gpxUploadLabel">No file chosen</span>
+                                <span id="gpx-upload-label">No file chosen</span>
+                            </label>
+                            <button class="btn btn-outline-primary rounded-end" type="button" id="upload-gpx-btn">
+                                Upload
                             </button>
-                            <button class="btn btn-outline-primary rounded-end" type="button" onclick="uploadGpx()">Upload</button>
                         </div>
                     </div>
 
+
                     <!-- Settings -->
                     <div class="mb-3">
-                        <label class="form-label">Select Route <span id="fileCount" class="badge text-bg-secondary">0</span></label>
+                        <label class="form-label" for="gpx-select">Select Route <span id="file-count-badge" class="badge text-bg-secondary">0</span></label>
                         <div class="input-group">
                             <span class="input-group-text"><i class="bi bi-map"></i></span>
-                            <select class="form-select" id="gpxSelect" onchange="onGpxSelected()">
+                            <select class="form-select" id="gpx-select">
                                 <option value="">-- Select a file --</option>
                             </select>
-                            <button class="btn btn-outline-secondary" type="button" onclick="loadFileList()" title="Refresh">
+                            <button class="btn btn-outline-secondary" type="button" id="refresh-file-list-btn" title="Refresh">
                                 <i class="bi bi-arrow-clockwise"></i>
                             </button>
-                            <button class="btn btn-outline-danger" type="button" onclick="deleteSelectedFile()" title="Delete" id="deleteBtn" disabled>
+                            <button class="btn btn-outline-danger" type="button" id="delete-file-btn" title="Delete"
+                                    disabled>
                                 <i class="bi bi-trash"></i>
                             </button>
                         </div>
                     </div>
 
                     <!-- Route Metadata -->
-                    <div id="routeMeta" class="mb-3 p-3 bg-light rounded border d-none">
+                    <div id="route-metadata" class="mb-3 p-3 bg-light rounded border d-none">
                         <div class="row text-center">
                             <div class="col">
                                 <div class="small text-muted">Distance</div>
-                                <div class="meta-value" id="metaDist">-</div>
+                                <div class="meta-value" id="metadata-distance">-</div>
                             </div>
                             <div class="col">
                                 <div class="small text-muted">Original Duration</div>
-                                <div class="meta-value" id="metaDur">-</div>
+                                <div class="meta-value" id="metadata-duration">-</div>
                             </div>
                             <div class="col">
                                 <div class="small text-muted">Points</div>
-                                <div class="meta-value" id="metaPoints">-</div>
+                                <div class="meta-value" id="metadata-points">-</div>
                             </div>
                         </div>
                     </div>
 
                     <div class="row mb-3">
                         <div class="col-md-6">
-                            <label class="form-label">Target Duration (min)</label>
-                            <input type="number" class="form-control" id="targetDur" step="0.1" oninput="onTargetDurationChange()">
+                            <label class="form-label" for="target-duration-input">Target Duration (min)</label>
+                            <input type="number" class="form-control" id="target-duration-input" step="0.1">
                         </div>
                         <div class="col-md-6">
-                            <label class="form-label">Speed Multiplier</label>
-                            <input type="number" class="form-control" id="speedMult" value="1.0" step="0.1" min="0.1" oninput="onSpeedMultChange()">
+                            <label class="form-label" for="speed-multiplier-input">Speed Multiplier</label>
+                            <input type="number" class="form-control" id="speed-multiplier-input" value="1.0"
+                                   step="0.1" min="0.1">
                         </div>
                     </div>
-                    
+
                     <div class="mb-4">
                         <div class="form-check">
-                            <input class="form-check-input" type="checkbox" id="loopCheck">
-                            <label class="form-check-label" for="loopCheck">Loop Track</label>
+                            <input class="form-check-input" type="checkbox" id="loop-checkbox">
+                            <label class="form-check-label" for="loop-checkbox">Loop Track</label>
                         </div>
                     </div>
 
                     <!-- Actions -->
                     <div class="d-grid gap-2 d-md-flex justify-content-md-center">
-                        <button class="btn btn-success flex-grow-1" id="toggleBtn" onclick="toggleSim()">Start</button>
-                        <button class="btn btn-danger flex-grow-1" id="resetBtn" onclick="resetSim()" disabled>Reset</button>
+                        <button class="btn btn-success flex-grow-1" id="toggle-simulation-btn">Start</button>
+                        <button class="btn btn-danger flex-grow-1" id="reset-simulation-btn" disabled>Reset</button>
                     </div>
 
                     <!-- Live Status -->
                     <div class="mt-4 p-3 bg-secondary bg-opacity-10 rounded">
-                        <h6>Status: <span id="simStatus" class="status-stopped">Idle</span></h6>
+                        <h6>Status: <span id="simulation-status" class="status-stopped">Idle</span></h6>
                         <div class="progress mb-2">
-                            <div class="progress-bar progress-bar-striped progress-bar-animated" id="progressBar" role="progressbar" style="width: 0%"></div>
+                            <div class="progress-bar progress-bar-striped progress-bar-animated" id="progress-bar"
+                                 role="progressbar" style="width: 0%"></div>
                         </div>
-                        <small class="text-muted" id="progressText">0 / 0 points</small>
+                        <small class="text-muted" id="progress-text">0 / 0 points</small>
                     </div>
                 </div>
             </div>
@@ -201,409 +284,8 @@
 <!-- Leaflet JS -->
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script>
-    let currentGpxDuration = 0; // in seconds
-    let isRunning = false;
-    let hasStarted = false; // To track if we are in "Resume" state
-    
-    // Map variables
-    let map, routeLayer, markerLayer;
-
-    // --- Map Initialization ---
-    function initMap() {
-        // Default view (will be updated when GPX loads)
-        map = L.map('map').setView([39.9042, 116.4074], 4); // Center on China
-        
-        const tk = '24768d6d2d5a0be2d51dddad8bcf5c89';
-        
-        // TianDiTu Vector Base Layer (vec_w)
-        const vecLayer = L.tileLayer('http://t{s}.tianditu.gov.cn/vec_w/wmts?SERVICE=WMTS&REQUEST=GetTile&VERSION=1.0.0&LAYER=vec&STYLE=default&TILEMATRIXSET=w&FORMAT=tiles&TILEMATRIX={z}&TILEROW={y}&TILECOL={x}&tk=' + tk, {
-            subdomains: ['0', '1', '2', '3', '4', '5', '6', '7'],
-            attribution: '&copy; <a href="http://www.tianditu.gov.cn">Tianditu</a>'
-        }).addTo(map);
-
-        // TianDiTu Vector Annotation Layer (cva_w) - Labels
-        const cvaLayer = L.tileLayer('http://t{s}.tianditu.gov.cn/cva_w/wmts?SERVICE=WMTS&REQUEST=GetTile&VERSION=1.0.0&LAYER=cva&STYLE=default&TILEMATRIXSET=w&FORMAT=tiles&TILEMATRIX={z}&TILEROW={y}&TILECOL={x}&tk=' + tk, {
-            subdomains: ['0', '1', '2', '3', '4', '5', '6', '7']
-        }).addTo(map);
-    }
-
-    // --- Devices ---
-    async function refreshDevices() {
-        try {
-            const res = await axios.get('/api/devices');
-            const tbody = document.getElementById('deviceList');
-            tbody.innerHTML = '';
-            
-            if (res.data.length === 0) {
-                tbody.innerHTML = '<tr><td colspan="4" class="text-center text-muted">No devices found. Click Scan.</td></tr>';
-                return;
-            }
-
-            res.data.forEach(dev => {
-                const tr = document.createElement('tr');
-                const displayName = dev.name;
-                const realNameInfo = dev.real_name && dev.real_name !== dev.name ? 
-                                     `<div class="real-name"><i class="bi bi-phone"></i> ${dev.real_name}</div>` : '';
-                
-                // Device type icon and badge
-                const deviceIcon = dev.device_type === 'iOS' ? 'bi-apple' : 'bi-android2';
-                const deviceBadgeClass = dev.device_type === 'iOS' ? 'text-bg-dark' : 'text-bg-success';
-                
-                // Connection type formatting
-                let connTypeDisplay = dev.connection_type.toUpperCase();
-                let connBadgeClass = 'text-bg-secondary';
-                if (dev.connection_type === 'wifi' || dev.connection_type === 'rsd') {
-                    connBadgeClass = 'text-bg-info';
-                    connTypeDisplay = 'RSD';
-                } else if (dev.connection_type === 'usb') {
-                    connBadgeClass = 'text-bg-primary';
-                } else if (dev.connection_type === 'adb') {
-                    connBadgeClass = 'text-bg-warning';
-                }
-                    
-                tr.innerHTML = `
-                    <td><input type="checkbox" class="dev-check" value="${dev.udid}"></td>
-                    <td>
-                        <div class="d-flex align-items-center">
-                            <span class="device-name"></span>
-                            <i class="bi bi-pencil-square rename-btn" title="Rename"></i>
-                        </div>
-                        ${realNameInfo}
-                        <div class="real-name text-muted small device-id" style="font-family: monospace;">ID: ${dev.udid}</div>
-                        <div class="device-badges">
-                            <span class="badge ${deviceBadgeClass} me-1">
-                                <i class="bi ${deviceIcon}"></i> ${dev.device_type}
-                            </span>
-                            <span class="badge ${connBadgeClass}">${connTypeDisplay}</span>
-                        </div>
-                    </td>
-                    <td class="device-type-col">
-                        <span class="badge ${deviceBadgeClass}">
-                            <i class="bi ${deviceIcon}"></i> ${dev.device_type}
-                        </span>
-                    </td>
-                    <td class="connection-col">
-                        <span class="badge ${connBadgeClass}">${connTypeDisplay}</span>
-                    </td>
-                `;
-                
-                const nameSpan = tr.querySelector('.device-name');
-                nameSpan.textContent = displayName;
-                
-                const renameBtn = tr.querySelector('.rename-btn');
-                renameBtn.dataset.udid = dev.udid;
-                renameBtn.dataset.name = displayName;
-                renameBtn.onclick = function() {
-                    renameDevice(this.dataset.udid, this.dataset.name);
-                };
-
-                tbody.appendChild(tr);
-            });
-        } catch (e) { console.error(e); }
-    }
-
-    async function renameDevice(udid, currentName) {
-        const newName = prompt("Enter new name for device:", currentName);
-        if (newName && newName.trim() !== "") {
-            try {
-                await axios.post('/api/devices/rename', { udid: udid, name: newName });
-                refreshDevices();
-            } catch (e) {
-                alert('Failed to rename: ' + (e.response?.data?.error || e.message));
-            }
-        }
-    }
-
-    function toggleSelectAll() {
-        const master = document.getElementById('selectAll');
-        document.querySelectorAll('.dev-check').forEach(c => c.checked = master.checked);
-    }
-
-    // --- Files & Metadata ---
-    async function uploadGpx() {
-        const fileInput = document.getElementById('gpxUpload');
-        if (!fileInput.files[0]) return;
-        const formData = new FormData();
-        formData.append('file', fileInput.files[0]);
-        try {
-            await axios.post('/api/upload', formData);
-            loadFileList();
-            fileInput.value = '';
-            updateFileInputLabel(); // Reset label
-        } catch (e) { alert('Upload failed'); }
-    }
-
-    // Update file input display text
-    function updateFileInputLabel() {
-        const fileInput = document.getElementById('gpxUpload');
-        const label = document.getElementById('gpxUploadLabel');
-        if (fileInput.files.length > 0) {
-            label.textContent = fileInput.files[0].name;
-        } else {
-            label.textContent = 'No file chosen';
-        }
-    }
-
-    async function loadFileList() {
-        const res = await axios.get('/api/gpx_files');
-        const sel = document.getElementById('gpxSelect');
-        const current = sel.value;
-        sel.innerHTML = '<option value="">-- Select a file --</option>';
-        
-        // Update file count badge
-        document.getElementById('fileCount').textContent = res.data.length;
-        
-        // Load each file with metadata
-        for (const f of res.data) {
-            try {
-                const detailRes = await axios.get(`/api/gpx_files/${f}/details`);
-                const data = detailRes.data;
-                const opt = document.createElement('option');
-                opt.value = f;
-                
-                // Format metadata
-                const distKm = (data.total_distance / 1000).toFixed(2);
-                const durMin = (data.total_duration / 60).toFixed(0);
-                const pts = data.point_count;
-                
-                opt.text = `${f} (${distKm}km · ${durMin}min · ${pts}pts)`;
-                sel.appendChild(opt);
-            } catch (e) {
-                // Fallback if metadata fails
-                const opt = document.createElement('option');
-                opt.value = f;
-                opt.text = f;
-                sel.appendChild(opt);
-            }
-        }
-        sel.value = current;
-        
-        // Enable/disable delete button
-        document.getElementById('deleteBtn').disabled = !sel.value;
-    }
-
-    async function deleteSelectedFile() {
-        const sel = document.getElementById('gpxSelect');
-        const filename = sel.value;
-        if (!filename) return;
-        
-        if (!confirm(`Delete "${filename}"?`)) return;
-        
-        try {
-            await axios.delete(`/api/gpx_files/${filename}`);
-            await loadFileList();
-            // Clear metadata and map if deleted file was selected
-            document.getElementById('routeMeta').classList.add('d-none');
-            if (routeLayer) map.removeLayer(routeLayer);
-            if (markerLayer) map.removeLayer(markerLayer);
-        } catch (e) {
-            alert('Delete failed: ' + (e.response?.data?.error || e.message));
-        }
-    }
-
-    async function onGpxSelected() {
-        const filename = document.getElementById('gpxSelect').value;
-        const metaDiv = document.getElementById('routeMeta');
-        
-        // Enable/disable delete button
-        document.getElementById('deleteBtn').disabled = !filename;
-        
-        // Clear map layers
-        if (routeLayer) map.removeLayer(routeLayer);
-        if (markerLayer) map.removeLayer(markerLayer);
-        routeLayer = null; 
-        markerLayer = null;
-
-        if (!filename) {
-            metaDiv.classList.add('d-none');
-            currentGpxDuration = 0;
-            return;
-        }
-
-        try {
-            const res = await axios.get(`/api/gpx_files/${filename}/details`);
-            const data = res.data;
-            
-            metaDiv.classList.remove('d-none');
-            document.getElementById('metaDist').innerText = (data.total_distance / 1000).toFixed(2) + ' km';
-            document.getElementById('metaPoints').innerText = data.point_count;
-            
-            currentGpxDuration = data.total_duration;
-            const durMin = (currentGpxDuration / 60).toFixed(1);
-            document.getElementById('metaDur').innerText = formatDuration(currentGpxDuration);
-            
-            // Draw Route on Map
-            if (data.points && data.points.length > 0) {
-                const latlngs = data.points.map(p => [p.lat, p.lon]);
-                routeLayer = L.polyline(latlngs, {color: 'red'}).addTo(map);
-                map.fitBounds(routeLayer.getBounds(), {padding: [50, 50]});
-            }
-
-            // Set defaults
-            document.getElementById('speedMult').value = 1.0;
-            if (currentGpxDuration > 0) {
-                document.getElementById('targetDur').value = durMin;
-                document.getElementById('speedMult').disabled = false;
-            } else {
-                // No timestamp case
-                document.getElementById('metaDur').innerText = "N/A";
-                document.getElementById('targetDur').value = 30; // Default 30 mins
-                document.getElementById('speedMult').value = "N/A";
-                document.getElementById('speedMult').disabled = true;
-            }
-
-        } catch (e) { console.error(e); }
-    }
-
-    function formatDuration(seconds) {
-        if (!seconds) return "0s";
-        const h = Math.floor(seconds / 3600);
-        const m = Math.floor((seconds % 3600) / 60);
-        const s = Math.floor(seconds % 60);
-        if (h > 0) return `${h}h ${m}m`;
-        return `${m}m ${s}s`;
-    }
-
-    // --- Speed/Duration Sync ---
-    function onTargetDurationChange() {
-        if (currentGpxDuration <= 0) return; // No base time to calc from
-        const targetMin = parseFloat(document.getElementById('targetDur').value);
-        if (targetMin > 0) {
-            const speed = (currentGpxDuration / 60) / targetMin;
-            document.getElementById('speedMult').value = speed.toFixed(2);
-        }
-    }
-
-    function onSpeedMultChange() {
-        if (currentGpxDuration <= 0) return;
-        const speed = parseFloat(document.getElementById('speedMult').value);
-        if (speed > 0) {
-            const targetMin = (currentGpxDuration / 60) / speed;
-            document.getElementById('targetDur').value = targetMin.toFixed(1);
-        }
-    }
-
-    // --- Control ---
-    async function toggleSim() {
-        if (isRunning) {
-            // If running, action is PAUSE
-            await stopSim();
-        } else {
-            // If stopped, action is START or RESUME
-            await startSim();
-        }
-    }
-
-    async function startSim() {
-        const filename = document.getElementById('gpxSelect').value;
-        const udids = Array.from(document.querySelectorAll('.dev-check:checked')).map(c => c.value);
-        const loop = document.getElementById('loopCheck').checked;
-        
-        let payload = { filename, udids, loop };
-        
-        if (currentGpxDuration > 0) {
-            payload.speed = document.getElementById('speedMult').value;
-        } else {
-            const targetMin = parseFloat(document.getElementById('targetDur').value);
-            if (!targetMin || targetMin <= 0) return alert("Please enter a valid target duration.");
-            payload.target_duration = targetMin * 60;
-        }
-
-        if (!filename) return alert('Select a GPX file');
-        if (udids.length === 0) return alert('Select at least one device');
-
-        try {
-            await axios.post('/api/start', payload);
-            // State update handled by pollStatus
-        } catch (e) { alert('Failed to start: ' + (e.response?.data?.error || e.message)); }
-    }
-
-    async function stopSim() {
-        try {
-            await axios.post('/api/stop');
-        } catch (e) { console.error(e); }
-    }
-
-    async function resetSim() {
-        try {
-            await axios.post('/api/reset');
-            hasStarted = false; // Reset local state
-            if (markerLayer) {
-                map.removeLayer(markerLayer);
-                markerLayer = null;
-            }
-        } catch (e) { console.error(e); }
-    }
-
-    function updateUI(running, currentIndex, totalPoints) {
-        isRunning = running;
-        if (currentIndex > 0) hasStarted = true;
-        if (currentIndex === 0 && !running) hasStarted = false;
-
-        const toggleBtn = document.getElementById('toggleBtn');
-        const resetBtn = document.getElementById('resetBtn');
-        const statusEl = document.getElementById('simStatus');
-
-        if (running) {
-            // State: Running
-            toggleBtn.innerText = "Pause";
-            toggleBtn.className = "btn btn-warning flex-grow-1";
-            resetBtn.disabled = false;
-            
-            statusEl.innerText = "Running";
-            statusEl.className = "status-running";
-        } else {
-            // State: Stopped/Paused/Idle
-            resetBtn.disabled = !hasStarted; // Only enable Reset if we have actually started
-            
-            if (hasStarted && currentIndex < totalPoints) {
-                // Paused
-                toggleBtn.innerText = "Resume";
-                statusEl.innerText = "Paused";
-            } else {
-                // Idle or Completed
-                toggleBtn.innerText = "Start";
-                statusEl.innerText = "Idle";
-            }
-            toggleBtn.className = "btn btn-success flex-grow-1";
-            statusEl.className = "status-stopped";
-        }
-    }
-
-    async function pollStatus() {
-        try {
-            const res = await axios.get('/api/status');
-            const s = res.data;
-            
-            // Pass all needed info to updateUI
-            const total = s.total_points || 0;
-            const current = s.current_index || 0;
-            updateUI(s.running, current, total);
-
-            const pct = total > 0 ? (current / total) * 100 : 0;
-            document.getElementById('progressBar').style.width = pct + '%';
-            document.getElementById('progressText').innerText = `${current} / ${total} points`;
-            
-            // Update Map Marker
-            if (s.current_lat && s.current_lon) {
-                if (!markerLayer) {
-                    markerLayer = L.marker([s.current_lat, s.current_lon]).addTo(map);
-                } else {
-                    markerLayer.setLatLng([s.current_lat, s.current_lon]);
-                }
-                // Optional: Pan map to follow marker if it goes out of view, or center always
-                // map.panTo([s.current_lat, s.current_lon]); 
-            }
-
-        } catch (e) { console.error(e); }
-    }
-    
-    // Init
-    refreshDevices();
-    loadFileList();
-    initMap(); // Initialize map
-    setInterval(pollStatus, 1000);
-
+    window.TIANDITU_KEY = "{{ tianditu_key|e }}";
 </script>
+<script src="{{ url_for('static', filename='app.js') }}"></script>
 </body>
 </html>
