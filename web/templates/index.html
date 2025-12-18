@@ -1,0 +1,402 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>OmniLocation Control</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.10.0/font/bootstrap-icons.css" rel="stylesheet">
+    <style>
+        .status-running { color: green; font-weight: bold; }
+        .status-stopped { color: gray; }
+        .device-name { font-weight: 500; }
+        .real-name { font-size: 0.85em; color: #6c757d; }
+        .rename-btn { cursor: pointer; color: #0d6efd; margin-left: 5px; opacity: 0.6; }
+        .rename-btn:hover { opacity: 1; }
+        .meta-value { font-weight: bold; color: #495057; }
+    </style>
+</head>
+<body class="bg-light">
+
+<div class="container py-5">
+    <h1 class="mb-4 text-center">OmniLocation Controller</h1>
+
+    <div class="row g-4">
+        <!-- Device Selection -->
+        <div class="col-md-6">
+            <div class="card h-100">
+                <div class="card-header d-flex justify-content-between align-items-center">
+                    <h5 class="mb-0">Device Pool</h5>
+                    <button class="btn btn-sm btn-outline-primary" onclick="refreshDevices()">Scan</button>
+                </div>
+                <div class="card-body">
+                    <div class="table-responsive">
+                        <table class="table table-hover align-middle">
+                            <thead>
+                                <tr>
+                                    <th style="width: 40px"><input type="checkbox" id="selectAll" onclick="toggleSelectAll()"></th>
+                                    <th>Name</th>
+                                    <th>Status</th>
+                                </tr>
+                            </thead>
+                            <tbody id="deviceList">
+                                <!-- Devices will be injected here -->
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Control Panel -->
+        <div class="col-md-6">
+            <div class="card h-100">
+                <div class="card-header">
+                    <h5 class="mb-0">Simulation Control</h5>
+                </div>
+                <div class="card-body">
+                    <!-- File Upload -->
+                    <div class="mb-3">
+                        <label class="form-label">Upload GPX</label>
+                        <div class="input-group">
+                            <input type="file" class="form-control" id="gpxUpload">
+                            <button class="btn btn-outline-secondary" type="button" onclick="uploadGpx()">Upload</button>
+                        </div>
+                    </div>
+
+                    <!-- Settings -->
+                    <div class="mb-3">
+                        <label class="form-label">Select Route</label>
+                        <select class="form-select" id="gpxSelect" onchange="onGpxSelected()">
+                            <option value="">-- Select a file --</option>
+                        </select>
+                    </div>
+
+                    <!-- Route Metadata -->
+                    <div id="routeMeta" class="mb-3 p-3 bg-light rounded border d-none">
+                        <div class="row text-center">
+                            <div class="col">
+                                <div class="small text-muted">Distance</div>
+                                <div class="meta-value" id="metaDist">-</div>
+                            </div>
+                            <div class="col">
+                                <div class="small text-muted">Original Duration</div>
+                                <div class="meta-value" id="metaDur">-</div>
+                            </div>
+                            <div class="col">
+                                <div class="small text-muted">Points</div>
+                                <div class="meta-value" id="metaPoints">-</div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="row mb-3">
+                        <div class="col-md-6">
+                            <label class="form-label">Target Duration (min)</label>
+                            <input type="number" class="form-control" id="targetDur" step="0.1" oninput="onTargetDurationChange()">
+                        </div>
+                        <div class="col-md-6">
+                            <label class="form-label">Speed Multiplier</label>
+                            <input type="number" class="form-control" id="speedMult" value="1.0" step="0.1" min="0.1" oninput="onSpeedMultChange()">
+                        </div>
+                    </div>
+                    
+                    <div class="mb-4">
+                        <div class="form-check">
+                            <input class="form-check-input" type="checkbox" id="loopCheck">
+                            <label class="form-check-label" for="loopCheck">Loop Track</label>
+                        </div>
+                    </div>
+
+                    <!-- Actions -->
+                    <div class="d-grid gap-2 d-md-flex justify-content-md-center">
+                        <button class="btn btn-success flex-grow-1" id="toggleBtn" onclick="toggleSim()">Start</button>
+                        <button class="btn btn-danger flex-grow-1" id="endBtn" onclick="resetSim()" disabled>Reset</button>
+                    </div>
+
+                    <!-- Live Status -->
+                    <div class="mt-4 p-3 bg-secondary bg-opacity-10 rounded">
+                        <h6>Status: <span id="simStatus" class="status-stopped">Idle</span></h6>
+                        <div class="progress mb-2">
+                            <div class="progress-bar progress-bar-striped progress-bar-animated" id="progressBar" role="progressbar" style="width: 0%"></div>
+                        </div>
+                        <small class="text-muted" id="progressText">0 / 0 points</small>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/axios/dist/axios.min.js"></script>
+<script>
+    let currentGpxDuration = 0; // in seconds
+    let isRunning = false;
+    let hasStarted = false; // To track if we are in "Resume" state
+
+    // --- Devices ---
+    async function refreshDevices() {
+        try {
+            const res = await axios.get('/api/devices');
+            const tbody = document.getElementById('deviceList');
+            tbody.innerHTML = '';
+            
+            if (res.data.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="3" class="text-center text-muted">No devices found. Click Scan.</td></tr>';
+                return;
+            }
+
+            res.data.forEach(dev => {
+                const tr = document.createElement('tr');
+                const displayName = dev.name;
+                const realNameInfo = dev.real_name && dev.real_name !== dev.name ? 
+                                     `<div class="real-name"><i class="bi bi-phone"></i> ${dev.real_name}</div>` : '';
+                    
+                tr.innerHTML = `
+                    <td><input type="checkbox" class="dev-check" value="${dev.udid}"></td>
+                    <td>
+                        <div class="d-flex align-items-center">
+                            <span class="device-name"></span>
+                            <i class="bi bi-pencil-square rename-btn" title="Rename"></i>
+                        </div>
+                        ${realNameInfo}
+                        <div class="real-name text-muted small" style="font-family: monospace;">ID: ${dev.udid}</div>
+                    </td>
+                    <td>
+                        <span class="badge ${dev.connected ? 'text-bg-success' : 'text-bg-secondary'}">${dev.connection_type}</span>
+                    </td>
+                `;
+                
+                const nameSpan = tr.querySelector('.device-name');
+                nameSpan.textContent = displayName;
+                
+                const renameBtn = tr.querySelector('.rename-btn');
+                renameBtn.dataset.udid = dev.udid;
+                renameBtn.dataset.name = displayName;
+                renameBtn.onclick = function() {
+                    renameDevice(this.dataset.udid, this.dataset.name);
+                };
+
+                tbody.appendChild(tr);
+            });
+        } catch (e) { console.error(e); }
+    }
+
+    async function renameDevice(udid, currentName) {
+        const newName = prompt("Enter new name for device:", currentName);
+        if (newName && newName.trim() !== "") {
+            try {
+                await axios.post('/api/devices/rename', { udid: udid, name: newName });
+                refreshDevices();
+            } catch (e) {
+                alert('Failed to rename: ' + (e.response?.data?.error || e.message));
+            }
+        }
+    }
+
+    function toggleSelectAll() {
+        const master = document.getElementById('selectAll');
+        document.querySelectorAll('.dev-check').forEach(c => c.checked = master.checked);
+    }
+
+    // --- Files & Metadata ---
+    async function uploadGpx() {
+        const fileInput = document.getElementById('gpxUpload');
+        if (!fileInput.files[0]) return;
+        const formData = new FormData();
+        formData.append('file', fileInput.files[0]);
+        try {
+            await axios.post('/api/upload', formData);
+            loadFileList();
+            fileInput.value = '';
+        } catch (e) { alert('Upload failed'); }
+    }
+
+    async function loadFileList() {
+        const res = await axios.get('/api/gpx_files');
+        const sel = document.getElementById('gpxSelect');
+        const current = sel.value;
+        sel.innerHTML = '<option value="">-- Select a file --</option>';
+        res.data.forEach(f => {
+            const opt = document.createElement('option');
+            opt.value = f;
+            opt.text = f;
+            sel.appendChild(opt);
+        });
+        sel.value = current;
+    }
+
+    async function onGpxSelected() {
+        const filename = document.getElementById('gpxSelect').value;
+        const metaDiv = document.getElementById('routeMeta');
+        
+        if (!filename) {
+            metaDiv.classList.add('d-none');
+            currentGpxDuration = 0;
+            return;
+        }
+
+        try {
+            const res = await axios.get(`/api/gpx_files/${filename}/details`);
+            const data = res.data;
+            
+            metaDiv.classList.remove('d-none');
+            document.getElementById('metaDist').innerText = (data.total_distance / 1000).toFixed(2) + ' km';
+            document.getElementById('metaPoints').innerText = data.point_count;
+            
+            currentGpxDuration = data.total_duration;
+            const durMin = (currentGpxDuration / 60).toFixed(1);
+            document.getElementById('metaDur').innerText = formatDuration(currentGpxDuration);
+            
+            // Set defaults
+            document.getElementById('speedMult').value = 1.0;
+            if (currentGpxDuration > 0) {
+                document.getElementById('targetDur').value = durMin;
+                document.getElementById('speedMult').disabled = false;
+            } else {
+                // No timestamp case
+                document.getElementById('metaDur').innerText = "N/A";
+                document.getElementById('targetDur').value = 30; // Default 30 mins
+                document.getElementById('speedMult').value = "N/A";
+                document.getElementById('speedMult').disabled = true;
+            }
+
+        } catch (e) { console.error(e); }
+    }
+
+    function formatDuration(seconds) {
+        if (!seconds) return "0s";
+        const h = Math.floor(seconds / 3600);
+        const m = Math.floor((seconds % 3600) / 60);
+        const s = Math.floor(seconds % 60);
+        if (h > 0) return `${h}h ${m}m`;
+        return `${m}m ${s}s`;
+    }
+
+    // --- Speed/Duration Sync ---
+    function onTargetDurationChange() {
+        if (currentGpxDuration <= 0) return; // No base time to calc from
+        const targetMin = parseFloat(document.getElementById('targetDur').value);
+        if (targetMin > 0) {
+            const speed = (currentGpxDuration / 60) / targetMin;
+            document.getElementById('speedMult').value = speed.toFixed(2);
+        }
+    }
+
+    function onSpeedMultChange() {
+        if (currentGpxDuration <= 0) return;
+        const speed = parseFloat(document.getElementById('speedMult').value);
+        if (speed > 0) {
+            const targetMin = (currentGpxDuration / 60) / speed;
+            document.getElementById('targetDur').value = targetMin.toFixed(1);
+        }
+    }
+
+    // --- Control ---
+    async function toggleSim() {
+        if (isRunning) {
+            // If running, action is PAUSE
+            await stopSim();
+        } else {
+            // If stopped, action is START or RESUME
+            await startSim();
+        }
+    }
+
+    async function startSim() {
+        const filename = document.getElementById('gpxSelect').value;
+        const udids = Array.from(document.querySelectorAll('.dev-check:checked')).map(c => c.value);
+        const loop = document.getElementById('loopCheck').checked;
+        
+        let payload = { filename, udids, loop };
+        
+        if (currentGpxDuration > 0) {
+            payload.speed = document.getElementById('speedMult').value;
+        } else {
+            const targetMin = parseFloat(document.getElementById('targetDur').value);
+            if (!targetMin || targetMin <= 0) return alert("Please enter a valid target duration.");
+            payload.target_duration = targetMin * 60;
+        }
+
+        if (!filename) return alert('Select a GPX file');
+        if (udids.length === 0) return alert('Select at least one device');
+
+        try {
+            await axios.post('/api/start', payload);
+            // State update handled by pollStatus
+        } catch (e) { alert('Failed to start: ' + (e.response?.data?.error || e.message)); }
+    }
+
+    async function stopSim() {
+        try {
+            await axios.post('/api/stop');
+        } catch (e) { console.error(e); }
+    }
+
+    async function resetSim() {
+        try {
+            await axios.post('/api/reset');
+            hasStarted = false; // Reset local state
+        } catch (e) { console.error(e); }
+    }
+
+    function updateUI(running, currentIndex, totalPoints) {
+        isRunning = running;
+        if (currentIndex > 0) hasStarted = true;
+        if (currentIndex === 0 && !running) hasStarted = false;
+
+        const toggleBtn = document.getElementById('toggleBtn');
+        const endBtn = document.getElementById('endBtn');
+        const statusEl = document.getElementById('simStatus');
+
+        if (running) {
+            // State: Running
+            toggleBtn.innerText = "Pause";
+            toggleBtn.className = "btn btn-warning flex-grow-1";
+            endBtn.disabled = false;
+            
+            statusEl.innerText = "Running";
+            statusEl.className = "status-running";
+        } else {
+            // State: Stopped/Paused/Idle
+            endBtn.disabled = !hasStarted; // Only enable End if we have actually started
+            
+            if (hasStarted && currentIndex < totalPoints) {
+                // Paused
+                toggleBtn.innerText = "Resume";
+                statusEl.innerText = "Paused";
+            } else {
+                // Idle or Completed
+                toggleBtn.innerText = "Start";
+                statusEl.innerText = "Idle";
+            }
+            toggleBtn.className = "btn btn-success flex-grow-1";
+            statusEl.className = "status-stopped";
+        }
+    }
+
+    async function pollStatus() {
+        try {
+            const res = await axios.get('/api/status');
+            const s = res.data;
+            
+            // Pass all needed info to updateUI
+            const total = s.total_points || 0;
+            const current = s.current_index || 0;
+            updateUI(s.running, current, total);
+
+            const pct = total > 0 ? (current / total) * 100 : 0;
+            document.getElementById('progressBar').style.width = pct + '%';
+            document.getElementById('progressText').innerText = `${current} / ${total} points`;
+            
+        } catch (e) { console.error(e); }
+    }
+    
+    // Init
+    refreshDevices();
+    loadFileList();
+    setInterval(pollStatus, 1000);
+
+</script>
+</body>
+</html>
