@@ -5,17 +5,28 @@ import logging
 import sqlite3
 from typing import Any, Dict, List, Optional, Tuple
 
+# iOS Imports
 from pymobiledevice3.exceptions import InvalidServiceError
 from pymobiledevice3.lockdown import create_using_usbmux
 from pymobiledevice3.remote.remote_service_discovery import RemoteServiceDiscoveryService
 from pymobiledevice3.services.dvt.dvt_secure_socket_proxy import DvtSecureSocketProxyService
 from pymobiledevice3.services.dvt.instruments.location_simulation import LocationSimulation
 from pymobiledevice3.services.simulate_location import DtSimulateLocation
-from pymobiledevice3.usbmux import list_devices
+from pymobiledevice3.usbmux import list_devices as list_ios_devices
+
+# Android Imports
+try:
+    from ppadb.client import Client as AdbClient
+    from ppadb.device import Device as PpadbDevice
+    ADB_AVAILABLE = True
+except ImportError:
+    ADB_AVAILABLE = False
 
 logger = logging.getLogger(__name__)
 
 DB_PATH = "devices.db"
+# Intent constants for Fake GPS location (com.lexa.fakegps)
+ANDROID_INTENT_ACTION = "com.lexa.fakegps.START"
 
 
 def init_db() -> None:
@@ -103,7 +114,7 @@ class BaseDevice:
     Attributes:
         udid: The Unique Device Identifier.
         connected: Connection status flag.
-        connection_type: Type of connection ('usb', 'wifi', or 'unknown').
+        connection_type: Type of connection ('usb', 'wifi', 'adb', or 'unknown').
         real_name: Name retrieved from the device hardware.
         custom_name: Name assigned by the user.
     """
@@ -280,27 +291,101 @@ class IOSDevice(BaseDevice):
         self.connected = False
 
 
+class AndroidDevice(BaseDevice):
+    """Represents an Android device controlled via ADB and Fake GPS Joystick.
+    
+    Attributes:
+        serial: The ADB device serial number.
+        adb_client: An active ppadb Client instance.
+    """
+
+    def __init__(self, serial: str, adb_client: Any) -> None:
+        """Initializes the AndroidDevice.
+
+        Args:
+            serial: The ADB device serial number.
+            adb_client: An active ppadb Client instance.
+        """
+        super().__init__(udid=serial, name=f"Android ({serial[:8]}...)")
+        self.serial = serial
+        self.adb_client = adb_client
+        self._device: Any = None
+        self.connection_type = "adb"
+
+    async def connect(self) -> None:
+        """Connects to the Android device via ADB."""
+        try:
+            self._device = self.adb_client.device(self.serial)
+            if not self._device:
+                raise ConnectionError(f"ADB device {self.serial} not found")
+            
+            # Fetch real device model name
+            try:
+                model = self._device.get_properties().get("ro.product.model", "Unknown")
+                self.real_name = f"{model} ({self.serial})"
+                update_device_info_in_db(self.udid, real_name=self.real_name)
+            except Exception as e:
+                logger.warning("Could not fetch Android properties: %s", e)
+
+            self.connected = True
+            logger.info("Android device %s connected", self.serial)
+        except Exception as e:
+            self.connected = False
+            logger.error("Failed to connect to Android %s: %s", self.serial, e)
+            raise
+
+    def set_location(self, lat: float, lon: float) -> None:
+        """Sets the location by sending a startservice intent to Fake GPS.
+        
+        Args:
+            lat: Latitude.
+            lon: Longitude.
+        """
+        if not self._device:
+            return
+
+        try:
+            # Construct the broadcast command for com.lexa.fakegps
+            # Using --ed (double) for precision
+            cmd = (
+                f"am startservice -a {ANDROID_INTENT_ACTION} "
+                f"--ed lat {lat} --ed long {lon}"
+            )
+            self._device.shell(cmd)
+        except Exception as e:
+            logger.error("Error setting location for Android %s: %s", self.serial, e)
+            self.connected = False
+
+    def disconnect(self) -> None:
+        """Disconnects the device (logical disconnect)."""
+        self.connected = False
+
+
 class DevicePool:
-    """Manages a collection of connected devices."""
+    """Manages a collection of connected devices (iOS + Android)."""
 
     def __init__(self) -> None:
-        self.devices: Dict[str, IOSDevice] = {}
+        self.devices: Dict[str, BaseDevice] = {}
+        self.adb_client = None
         init_db()
-
-    def scan_usb_devices(self) -> List[IOSDevice]:
-        """Scans for connected devices via USB and Tunneld."""
-        found_devices: List[IOSDevice] = []
         
-        # 1. Scan Standard USB Devices
-        usb_devices = list_devices()
+        if ADB_AVAILABLE:
+            try:
+                self.adb_client = AdbClient(host="127.0.0.1", port=5037)
+            except Exception as e:
+                logger.warning("Failed to initialize ADB client: %s", e)
 
-        # 2. Scan Tunneld Devices (iOS 17+)
+    def scan_usb_devices(self) -> List[BaseDevice]:
+        """Scans for connected devices via USB, Tunneld, and ADB."""
+        found_devices: List[BaseDevice] = []
+        
+        # --- 1. iOS Scanning ---
+        ios_devices = list_ios_devices()
         tunnel_map: Dict[str, Tuple[str, int]] = {}
         try:
             # pylint: disable=import-outside-toplevel, protected-access
             from pymobiledevice3.tunneld.api import _list_tunnels
             tunnels_dict = _list_tunnels()
-
             for t_udid, t_list in tunnels_dict.items():
                 if t_list:
                     tunnel_info = t_list[0]
@@ -310,11 +395,9 @@ class DevicePool:
                             tunnel_info["tunnel-port"],
                         )
         except Exception:
-            # Ignore tunneld errors during scan
             pass
 
-        # Process devices
-        for dev in usb_devices:
+        for dev in ios_devices:
             udid = dev.serial
             rsd_info = tunnel_map.get(udid)
             conn_type = "wifi" if rsd_info else "usb"
@@ -330,14 +413,34 @@ class DevicePool:
                 found_devices.append(new_dev)
             else:
                 existing = self.devices[udid]
-                existing.rsd_info = rsd_info
-                existing.connection_type = conn_type
-                existing.real_name, existing.custom_name = get_device_info_from_db(udid)
-                found_devices.append(existing)
+                # Update existing
+                if isinstance(existing, IOSDevice):
+                    existing.rsd_info = rsd_info
+                    existing.connection_type = conn_type
+                    existing.real_name, existing.custom_name = get_device_info_from_db(udid)
+                    found_devices.append(existing)
+
+        # --- 2. Android Scanning ---
+        if self.adb_client:
+            try:
+                android_devs = self.adb_client.devices()
+                for adev in android_devs:
+                    serial = adev.serial
+                    if serial not in self.devices:
+                        new_android = AndroidDevice(serial, self.adb_client)
+                        self.devices[serial] = new_android
+                        found_devices.append(new_android)
+                    else:
+                        existing_android = self.devices[serial]
+                        if isinstance(existing_android, AndroidDevice):
+                            existing_android.real_name, existing_android.custom_name = get_device_info_from_db(serial)
+                            found_devices.append(existing_android)
+            except Exception as e:
+                logger.debug("ADB scan failed: %s", e)
 
         return found_devices
 
-    def get_device(self, udid: str) -> Optional[IOSDevice]:
+    def get_device(self, udid: str) -> Optional[BaseDevice]:
         """Retrieves a device by its UDID."""
         return self.devices.get(udid)
     
@@ -361,6 +464,6 @@ class DevicePool:
             self.devices[udid].custom_name = new_name
         return True
 
-    def get_all_devices(self) -> List[IOSDevice]:
+    def get_all_devices(self) -> List[BaseDevice]:
         """Returns a list of all managed devices."""
         return list(self.devices.values())

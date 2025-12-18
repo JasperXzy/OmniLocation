@@ -2,3 +2,4 @@ flask
 pymobiledevice3
 gpxpy
 python-dotenv
+pure-python-adb
