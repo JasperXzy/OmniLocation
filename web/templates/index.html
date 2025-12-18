@@ -39,7 +39,8 @@
                                 <tr>
                                     <th style="width: 40px"><input type="checkbox" id="selectAll" onclick="toggleSelectAll()"></th>
                                     <th>Name</th>
-                                    <th>Status</th>
+                                    <th>Device Type</th>
+                                    <th>Connection</th>
                                 </tr>
                             </thead>
                             <tbody id="deviceList">
@@ -181,7 +182,7 @@
             tbody.innerHTML = '';
             
             if (res.data.length === 0) {
-                tbody.innerHTML = '<tr><td colspan="3" class="text-center text-muted">No devices found. Click Scan.</td></tr>';
+                tbody.innerHTML = '<tr><td colspan="4" class="text-center text-muted">No devices found. Click Scan.</td></tr>';
                 return;
             }
 
@@ -190,6 +191,22 @@
                 const displayName = dev.name;
                 const realNameInfo = dev.real_name && dev.real_name !== dev.name ? 
                                      `<div class="real-name"><i class="bi bi-phone"></i> ${dev.real_name}</div>` : '';
+                
+                // Device type icon and badge
+                const deviceIcon = dev.device_type === 'iOS' ? 'bi-apple' : 'bi-android2';
+                const deviceBadgeClass = dev.device_type === 'iOS' ? 'text-bg-dark' : 'text-bg-success';
+                
+                // Connection type formatting
+                let connTypeDisplay = dev.connection_type.toUpperCase();
+                let connBadgeClass = 'text-bg-secondary';
+                if (dev.connection_type === 'wifi' || dev.connection_type === 'rsd') {
+                    connBadgeClass = 'text-bg-info';
+                    connTypeDisplay = 'RSD';
+                } else if (dev.connection_type === 'usb') {
+                    connBadgeClass = 'text-bg-primary';
+                } else if (dev.connection_type === 'adb') {
+                    connBadgeClass = 'text-bg-warning';
+                }
                     
                 tr.innerHTML = `
                     <td><input type="checkbox" class="dev-check" value="${dev.udid}"></td>
@@ -202,7 +219,12 @@
                         <div class="real-name text-muted small" style="font-family: monospace;">ID: ${dev.udid}</div>
                     </td>
                     <td>
-                        <span class="badge ${dev.connected ? 'text-bg-success' : 'text-bg-secondary'}">${dev.connection_type}</span>
+                        <span class="badge ${deviceBadgeClass}">
+                            <i class="bi ${deviceIcon}"></i> ${dev.device_type}
+                        </span>
+                    </td>
+                    <td>
+                        <span class="badge ${connBadgeClass}">${connTypeDisplay}</span>
                     </td>
                 `;
                 

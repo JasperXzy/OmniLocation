@@ -78,10 +78,13 @@ def create_app(
         devices = current_app.device_pool.scan_usb_devices()  # type: ignore
         dev_list: List[Dict[str, Any]] = []
         for d in devices:
+            # Determine device type
+            device_type = 'iOS' if d.__class__.__name__ == 'IOSDevice' else 'Android'
             dev_list.append({
                 'udid': d.udid,
                 'name': d.name,
                 'real_name': d.real_name,
+                'device_type': device_type,
                 'connection_type': d.connection_type,
                 'connected': d.connected
             })
