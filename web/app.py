@@ -62,7 +62,8 @@ def create_app(
     @app.route('/')
     def index() -> str:
         """Renders the main dashboard page."""
-        return render_template('index.html')
+        tianditu_key = os.getenv("TIANDITU_KEY", "")
+        return render_template('index.html', tianditu_key=tianditu_key)
 
     @app.route('/api/devices', methods=['GET'])
     def list_devices() -> Response:
@@ -153,7 +154,7 @@ def create_app(
         """API endpoint to get metadata for a specific GPX file.
 
         Returns:
-            JSON containing total_distance (m) and total_duration (s).
+            JSON containing total_distance (m), total_duration (s), and points list.
         """
         filename = secure_filename(filename)
         filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
@@ -164,11 +165,21 @@ def create_app(
         try:
             handler = GPXHandler(filepath)
             data = handler.parse()
+            
+            # Serialize points: Convert datetime objects to ISO strings
+            serialized_points = []
+            for p in data['points']:
+                point_dict = p.copy()
+                if point_dict.get('time'):
+                    point_dict['time'] = point_dict['time'].isoformat()
+                serialized_points.append(point_dict)
+
             return jsonify({
                 'filename': filename,
                 'total_distance': data['total_distance'],
                 'total_duration': data['total_duration'],
-                'point_count': len(data['points'])
+                'point_count': len(data['points']),
+                'points': serialized_points
             })
         except Exception as e:
             return jsonify({'error': str(e)}), 500

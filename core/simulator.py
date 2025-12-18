@@ -39,6 +39,8 @@ class Simulator:
             "total_points": 0,
             "speed_multiplier": 1.0,
             "loop": False,
+            "current_lat": None,
+            "current_lon": None,
         }
 
     async def start(
@@ -87,6 +89,8 @@ class Simulator:
             total_points=len(points),
             loop=loop_track,
             speed_multiplier=speed_multiplier,
+            current_lat=points[0]['lat'] if points else None,
+            current_lon=points[0]['lon'] if points else None,
         )
 
         self.current_task = asyncio.create_task(
@@ -120,7 +124,11 @@ class Simulator:
                 logger.error("Error resetting device %s: %s", dev.udid, e)
         
         self._active_devices = []
-        self._update_status(current_index=0)
+        self._update_status(
+            current_index=0,
+            current_lat=None,
+            current_lon=None
+        )
         logger.info("Simulation reset complete.")
 
     def _update_status(self, **kwargs: Any) -> None:
@@ -160,8 +168,10 @@ class Simulator:
                     if not self.active:
                         break
 
-                    self.status["current_index"] = i
                     lat, lon = point["lat"], point["lon"]
+                    self.status["current_index"] = i
+                    self.status["current_lat"] = lat
+                    self.status["current_lon"] = lon
 
                     # Broadcast location with simple jitter
                     # TODO(Future): Move jitter logic to a separate helper or config.

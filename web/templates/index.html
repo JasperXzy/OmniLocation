@@ -6,6 +6,8 @@
     <title>OmniLocation Control</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
     <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.10.0/font/bootstrap-icons.css" rel="stylesheet">
+    <!-- Leaflet CSS -->
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
     <style>
         .status-running { color: green; font-weight: bold; }
         .status-stopped { color: gray; }
@@ -14,6 +16,7 @@
         .rename-btn { cursor: pointer; color: #0d6efd; margin-left: 5px; opacity: 0.6; }
         .rename-btn:hover { opacity: 1; }
         .meta-value { font-weight: bold; color: #495057; }
+        #map { height: 400px; width: 100%; border-radius: 8px; border: 1px solid #dee2e6; }
     </style>
 </head>
 <body class="bg-light">
@@ -21,7 +24,7 @@
 <div class="container py-5">
     <h1 class="mb-4 text-center">OmniLocation Controller</h1>
 
-    <div class="row g-4">
+    <div class="row g-4 mb-4">
         <!-- Device Selection -->
         <div class="col-md-6">
             <div class="card h-100">
@@ -111,7 +114,7 @@
                     <!-- Actions -->
                     <div class="d-grid gap-2 d-md-flex justify-content-md-center">
                         <button class="btn btn-success flex-grow-1" id="toggleBtn" onclick="toggleSim()">Start</button>
-                        <button class="btn btn-danger flex-grow-1" id="endBtn" onclick="resetSim()" disabled>Reset</button>
+                        <button class="btn btn-danger flex-grow-1" id="resetBtn" onclick="resetSim()" disabled>Reset</button>
                     </div>
 
                     <!-- Live Status -->
@@ -126,13 +129,49 @@
             </div>
         </div>
     </div>
+
+    <!-- Map Container -->
+    <div class="row">
+        <div class="col-12">
+            <div class="card">
+                <div class="card-header">Live Map</div>
+                <div class="card-body p-0">
+                    <div id="map"></div>
+                </div>
+            </div>
+        </div>
+    </div>
 </div>
 
 <script src="https://cdn.jsdelivr.net/npm/axios/dist/axios.min.js"></script>
+<!-- Leaflet JS -->
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script>
     let currentGpxDuration = 0; // in seconds
     let isRunning = false;
     let hasStarted = false; // To track if we are in "Resume" state
+    
+    // Map variables
+    let map, routeLayer, markerLayer;
+
+    // --- Map Initialization ---
+    function initMap() {
+        // Default view (will be updated when GPX loads)
+        map = L.map('map').setView([39.9042, 116.4074], 4); // Center on China
+        
+        const tk = '24768d6d2d5a0be2d51dddad8bcf5c89';
+        
+        // TianDiTu Vector Base Layer (vec_w)
+        const vecLayer = L.tileLayer('http://t{s}.tianditu.gov.cn/vec_w/wmts?SERVICE=WMTS&REQUEST=GetTile&VERSION=1.0.0&LAYER=vec&STYLE=default&TILEMATRIXSET=w&FORMAT=tiles&TILEMATRIX={z}&TILEROW={y}&TILECOL={x}&tk=' + tk, {
+            subdomains: ['0', '1', '2', '3', '4', '5', '6', '7'],
+            attribution: '&copy; <a href="http://www.tianditu.gov.cn">Tianditu</a>'
+        }).addTo(map);
+
+        // TianDiTu Vector Annotation Layer (cva_w) - Labels
+        const cvaLayer = L.tileLayer('http://t{s}.tianditu.gov.cn/cva_w/wmts?SERVICE=WMTS&REQUEST=GetTile&VERSION=1.0.0&LAYER=cva&STYLE=default&TILEMATRIXSET=w&FORMAT=tiles&TILEMATRIX={z}&TILEROW={y}&TILECOL={x}&tk=' + tk, {
+            subdomains: ['0', '1', '2', '3', '4', '5', '6', '7']
+        }).addTo(map);
+    }
 
     // --- Devices ---
     async function refreshDevices() {
@@ -230,6 +269,12 @@
         const filename = document.getElementById('gpxSelect').value;
         const metaDiv = document.getElementById('routeMeta');
         
+        // Clear map layers
+        if (routeLayer) map.removeLayer(routeLayer);
+        if (markerLayer) map.removeLayer(markerLayer);
+        routeLayer = null; 
+        markerLayer = null;
+
         if (!filename) {
             metaDiv.classList.add('d-none');
             currentGpxDuration = 0;
@@ -248,6 +293,13 @@
             const durMin = (currentGpxDuration / 60).toFixed(1);
             document.getElementById('metaDur').innerText = formatDuration(currentGpxDuration);
             
+            // Draw Route on Map
+            if (data.points && data.points.length > 0) {
+                const latlngs = data.points.map(p => [p.lat, p.lon]);
+                routeLayer = L.polyline(latlngs, {color: 'red'}).addTo(map);
+                map.fitBounds(routeLayer.getBounds(), {padding: [50, 50]});
+            }
+
             // Set defaults
             document.getElementById('speedMult').value = 1.0;
             if (currentGpxDuration > 0) {
@@ -337,6 +389,10 @@
         try {
             await axios.post('/api/reset');
             hasStarted = false; // Reset local state
+            if (markerLayer) {
+                map.removeLayer(markerLayer);
+                markerLayer = null;
+            }
         } catch (e) { console.error(e); }
     }
 
@@ -346,20 +402,20 @@
         if (currentIndex === 0 && !running) hasStarted = false;
 
         const toggleBtn = document.getElementById('toggleBtn');
-        const endBtn = document.getElementById('endBtn');
+        const resetBtn = document.getElementById('resetBtn');
         const statusEl = document.getElementById('simStatus');
 
         if (running) {
             // State: Running
             toggleBtn.innerText = "Pause";
             toggleBtn.className = "btn btn-warning flex-grow-1";
-            endBtn.disabled = false;
+            resetBtn.disabled = false;
             
             statusEl.innerText = "Running";
             statusEl.className = "status-running";
         } else {
             // State: Stopped/Paused/Idle
-            endBtn.disabled = !hasStarted; // Only enable End if we have actually started
+            resetBtn.disabled = !hasStarted; // Only enable Reset if we have actually started
             
             if (hasStarted && currentIndex < totalPoints) {
                 // Paused
@@ -389,12 +445,24 @@
             document.getElementById('progressBar').style.width = pct + '%';
             document.getElementById('progressText').innerText = `${current} / ${total} points`;
             
+            // Update Map Marker
+            if (s.current_lat && s.current_lon) {
+                if (!markerLayer) {
+                    markerLayer = L.marker([s.current_lat, s.current_lon]).addTo(map);
+                } else {
+                    markerLayer.setLatLng([s.current_lat, s.current_lon]);
+                }
+                // Optional: Pan map to follow marker if it goes out of view, or center always
+                // map.panTo([s.current_lat, s.current_lon]); 
+            }
+
         } catch (e) { console.error(e); }
     }
     
     // Init
     refreshDevices();
     loadFileList();
+    initMap(); // Initialize map
     setInterval(pollStatus, 1000);
 
 </script>

@@ -1,18 +1,22 @@
 """Entry point for the OmniLocation Server.
 
 Starts the background asyncio loop for device simulation and the Flask
-web server for user interaction.
+web server for user interaction. Configuration is loaded from .env file.
 """
 
-import argparse
 import asyncio
 import logging
+import os
 import threading
-from typing import NoReturn
+
+from dotenv import load_dotenv
 
 from core.device_manager import DevicePool
 from core.simulator import Simulator
 from web.app import create_app
+
+# Load environment variables from .env file
+load_dotenv()
 
 # Configure logging
 logging.basicConfig(
@@ -35,18 +39,9 @@ def run_loop(loop: asyncio.AbstractEventLoop) -> None:
 def main() -> None:
     """Main execution function.
 
-    Parses arguments, initializes core components, starts the background
-    asyncio thread, and runs the Flask web server.
+    Initializes core components, starts the background asyncio thread,
+    and runs the Flask web server using configuration from environment variables.
     """
-    parser = argparse.ArgumentParser(description="OmniLocation Server")
-    parser.add_argument(
-        '-p', '--port', type=int, default=5005, help="Port to run the server on"
-    )
-    parser.add_argument(
-        '--host', type=str, default="0.0.0.0", help="Host to bind to"
-    )
-    args = parser.parse_args()
-
     # 1. Setup Asyncio Loop in a Background Thread
     bg_loop = asyncio.new_event_loop()
     t = threading.Thread(target=run_loop, args=(bg_loop,), daemon=True)
@@ -61,8 +56,9 @@ def main() -> None:
     app = create_app(device_pool, simulator, bg_loop)
 
     # 4. Run Flask (Blocking)
-    host = args.host
-    port = args.port
+    host = os.getenv("HOST", "0.0.0.0")
+    port = int(os.getenv("PORT", 5005))
+    
     logger.info("Starting Web UI at http://%s:%d", host, port)
     
     try:
