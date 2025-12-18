@@ -17,6 +17,46 @@
         .rename-btn:hover { opacity: 1; }
         .meta-value { font-weight: bold; color: #495057; }
         #map { height: 400px; width: 100%; border-radius: 8px; border: 1px solid #dee2e6; }
+        
+        /* Mobile responsive styles */
+        .device-badges { display: none; margin-top: 5px; }
+        
+        /* Customize file input button to match form controls */
+        .file-select-btn {
+            background-color: #fff;
+            border-color: #dee2e6;
+            color: #495057;
+        }
+        .file-select-btn:hover {
+            background-color: #f8f9fa;
+            border-color: #dee2e6;
+            color: #495057;
+        }
+        
+        @media (max-width: 768px) {
+            /* Hide type and connection columns on mobile */
+            .device-type-col, .connection-col { display: none; }
+            /* Show badges under device name on mobile */
+            .device-badges { display: block; }
+            /* Make device name more prominent */
+            .device-name { font-size: 1.1em; font-weight: 600; }
+            /* Reduce prominence of secondary info */
+            .device-id { font-size: 0.65em !important; opacity: 0.6; margin-top: 6px; }
+            .real-name { font-size: 0.75em !important; opacity: 0.7; margin-top: 2px; }
+            /* Smaller and lighter badges on mobile */
+            .device-badges { margin-top: 4px; }
+            .device-badges .badge { 
+                font-size: 0.7em; 
+                padding: 0.2em 0.4em; 
+                opacity: 0.85;
+                font-weight: normal;
+            }
+            /* Adjust card padding */
+            .card-body { padding: 0.75rem; }
+            /* Smaller title */
+            h1 { font-size: 1.5rem; }
+            h5 { font-size: 1rem; }
+        }
     </style>
 </head>
 <body class="bg-light">
@@ -39,8 +79,8 @@
                                 <tr>
                                     <th style="width: 40px"><input type="checkbox" id="selectAll" onclick="toggleSelectAll()"></th>
                                     <th>Name</th>
-                                    <th>Device Type</th>
-                                    <th>Connection</th>
+                                    <th class="device-type-col">Device Type</th>
+                                    <th class="connection-col">Connection</th>
                                 </tr>
                             </thead>
                             <tbody id="deviceList">
@@ -63,17 +103,30 @@
                     <div class="mb-3">
                         <label class="form-label">Upload GPX</label>
                         <div class="input-group">
-                            <input type="file" class="form-control" id="gpxUpload">
-                            <button class="btn btn-outline-secondary" type="button" onclick="uploadGpx()">Upload</button>
+                            <input type="file" class="form-control d-none" id="gpxUpload" accept=".gpx" onchange="updateFileInputLabel()">
+                            <button class="btn file-select-btn flex-grow-1 text-start rounded-start" type="button" onclick="document.getElementById('gpxUpload').click()">
+                                <i class="bi bi-file-earmark-arrow-up me-2"></i>
+                                <span id="gpxUploadLabel">No file chosen</span>
+                            </button>
+                            <button class="btn btn-outline-primary rounded-end" type="button" onclick="uploadGpx()">Upload</button>
                         </div>
                     </div>
 
                     <!-- Settings -->
                     <div class="mb-3">
-                        <label class="form-label">Select Route</label>
-                        <select class="form-select" id="gpxSelect" onchange="onGpxSelected()">
-                            <option value="">-- Select a file --</option>
-                        </select>
+                        <label class="form-label">Select Route <span id="fileCount" class="badge text-bg-secondary">0</span></label>
+                        <div class="input-group">
+                            <span class="input-group-text"><i class="bi bi-map"></i></span>
+                            <select class="form-select" id="gpxSelect" onchange="onGpxSelected()">
+                                <option value="">-- Select a file --</option>
+                            </select>
+                            <button class="btn btn-outline-secondary" type="button" onclick="loadFileList()" title="Refresh">
+                                <i class="bi bi-arrow-clockwise"></i>
+                            </button>
+                            <button class="btn btn-outline-danger" type="button" onclick="deleteSelectedFile()" title="Delete" id="deleteBtn" disabled>
+                                <i class="bi bi-trash"></i>
+                            </button>
+                        </div>
                     </div>
 
                     <!-- Route Metadata -->
@@ -216,14 +269,20 @@
                             <i class="bi bi-pencil-square rename-btn" title="Rename"></i>
                         </div>
                         ${realNameInfo}
-                        <div class="real-name text-muted small" style="font-family: monospace;">ID: ${dev.udid}</div>
+                        <div class="real-name text-muted small device-id" style="font-family: monospace;">ID: ${dev.udid}</div>
+                        <div class="device-badges">
+                            <span class="badge ${deviceBadgeClass} me-1">
+                                <i class="bi ${deviceIcon}"></i> ${dev.device_type}
+                            </span>
+                            <span class="badge ${connBadgeClass}">${connTypeDisplay}</span>
+                        </div>
                     </td>
-                    <td>
+                    <td class="device-type-col">
                         <span class="badge ${deviceBadgeClass}">
                             <i class="bi ${deviceIcon}"></i> ${dev.device_type}
                         </span>
                     </td>
-                    <td>
+                    <td class="connection-col">
                         <span class="badge ${connBadgeClass}">${connTypeDisplay}</span>
                     </td>
                 `;
@@ -270,7 +329,19 @@
             await axios.post('/api/upload', formData);
             loadFileList();
             fileInput.value = '';
+            updateFileInputLabel(); // Reset label
         } catch (e) { alert('Upload failed'); }
+    }
+
+    // Update file input display text
+    function updateFileInputLabel() {
+        const fileInput = document.getElementById('gpxUpload');
+        const label = document.getElementById('gpxUploadLabel');
+        if (fileInput.files.length > 0) {
+            label.textContent = fileInput.files[0].name;
+        } else {
+            label.textContent = 'No file chosen';
+        }
     }
 
     async function loadFileList() {
@@ -278,18 +349,64 @@
         const sel = document.getElementById('gpxSelect');
         const current = sel.value;
         sel.innerHTML = '<option value="">-- Select a file --</option>';
-        res.data.forEach(f => {
-            const opt = document.createElement('option');
-            opt.value = f;
-            opt.text = f;
-            sel.appendChild(opt);
-        });
+        
+        // Update file count badge
+        document.getElementById('fileCount').textContent = res.data.length;
+        
+        // Load each file with metadata
+        for (const f of res.data) {
+            try {
+                const detailRes = await axios.get(`/api/gpx_files/${f}/details`);
+                const data = detailRes.data;
+                const opt = document.createElement('option');
+                opt.value = f;
+                
+                // Format metadata
+                const distKm = (data.total_distance / 1000).toFixed(2);
+                const durMin = (data.total_duration / 60).toFixed(0);
+                const pts = data.point_count;
+                
+                opt.text = `${f} (${distKm}km · ${durMin}min · ${pts}pts)`;
+                sel.appendChild(opt);
+            } catch (e) {
+                // Fallback if metadata fails
+                const opt = document.createElement('option');
+                opt.value = f;
+                opt.text = f;
+                sel.appendChild(opt);
+            }
+        }
         sel.value = current;
+        
+        // Enable/disable delete button
+        document.getElementById('deleteBtn').disabled = !sel.value;
+    }
+
+    async function deleteSelectedFile() {
+        const sel = document.getElementById('gpxSelect');
+        const filename = sel.value;
+        if (!filename) return;
+        
+        if (!confirm(`Delete "${filename}"?`)) return;
+        
+        try {
+            await axios.delete(`/api/gpx_files/${filename}`);
+            await loadFileList();
+            // Clear metadata and map if deleted file was selected
+            document.getElementById('routeMeta').classList.add('d-none');
+            if (routeLayer) map.removeLayer(routeLayer);
+            if (markerLayer) map.removeLayer(markerLayer);
+        } catch (e) {
+            alert('Delete failed: ' + (e.response?.data?.error || e.message));
+        }
     }
 
     async function onGpxSelected() {
         const filename = document.getElementById('gpxSelect').value;
         const metaDiv = document.getElementById('routeMeta');
+        
+        // Enable/disable delete button
+        document.getElementById('deleteBtn').disabled = !filename;
         
         // Clear map layers
         if (routeLayer) map.removeLayer(routeLayer);

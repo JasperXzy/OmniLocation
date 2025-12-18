@@ -152,6 +152,28 @@ def create_app(
             ]
         return jsonify(files)
 
+    @app.route('/api/gpx_files/<filename>', methods=['DELETE'])
+    def delete_gpx_file(filename: str) -> Response:
+        """API endpoint to delete a GPX file.
+
+        Args:
+            filename: The GPX file to delete.
+
+        Returns:
+            JSON response with success status.
+        """
+        filename = secure_filename(filename)
+        filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
+        
+        if not os.path.exists(filepath):
+            return jsonify({'error': 'File not found'}), 404
+        
+        try:
+            os.remove(filepath)
+            return jsonify({'success': True, 'message': f'Deleted {filename}'})
+        except Exception as e:
+            return jsonify({'error': str(e)}), 500
+
     @app.route('/api/gpx_files/<filename>/details', methods=['GET'])
     def get_gpx_details(filename: str) -> Response:
         """API endpoint to get metadata for a specific GPX file.
