@@ -2,39 +2,80 @@
 
 **分布式多设备定位模拟系统**
 
-基于 **地瓜机器人 RDK X5** 构建的便携式无头基站，通过 Web 界面统一管理，支持多台 iOS/Android 设备的高并发 GPS 轨迹模拟。
+OmniLocation 是一个基于 **地瓜机器人 RDK X5** 构建的无头定位模拟基站。系统采用 B/S 架构，通过 Web 界面统一管理，支持对多台 iOS 和 Android 设备进行同步或独立的 GPS 轨迹模拟。
 
-## 核心特性
+## 核心功能
 
-*   **集中管理**: B/S 架构，通过 Web 控制台统一调度
-*   **iOS 支持**: 适配 iOS 17+，利用 Tunneld/RSD 实现无线/USB 自动发现与控制
-*   **Android 支持**: 基于 ADB 实现控制
+*   **集中管理**: 通过 Web 控制台统一调度所有连接设备
+*   **iOS 支持**: 适配 iOS 17+，利用 Tunneld/RSD 实现无线与 USB 的自动发现及控制
+*   **Android 支持**: 基于 ADB 实现控制与定位模拟
 *   **智能模拟**:
-    *   GPX 路径解析与回放
-    *   目标时间与时间倍率调整
-    *   防作弊 Jitter 算法 (高斯分布随机偏移)
-*   **可视化**: 集成天地图，实时展示设备轨迹与位置
+    *   支持 GPX 路径解析与回放
+    *   支持设定目标时长与倍速播放
+    *   内置防作弊 Jitter 算法（高斯分布随机偏移）
+*   **可视化**: 集成天地图，实时展示设备轨迹与当前位置
 
 ## 快速开始
 
-### 环境要求
-*   Python 3.8+
-*   iOS/Android 设备需开启开发者模式
+### 一键安装
 
-### 安装依赖
+本系统支持 **macOS**（开发/测试）和 **Ubuntu/RDK X5**（生产环境）
+
+在终端中运行以下命令即可完成环境配置、依赖安装及服务启动：
+
 ```bash
-pip install -r requirements.txt
+curl -sSL https://raw.githubusercontent.com/JasperXzy/OmniLocation/main/install.sh | bash
 ```
 
-### 启动服务
-1. 确保 `tunneld` 守护进程已运行 (用于 iOS 发现):
-   ```bash
-   sudo python3 -m pymobiledevice3 remote tunneld
-   ```
+*   **macOS**: 自动配置 Python 虚拟环境并注册 LaunchAgent 服务
+*   **Linux**: 自动编译底层驱动 (Netmuxd)，配置 Systemd 服务并设置开机自启
 
-2. 启动 OmniLocation Web 服务:
-   ```bash
-   sudo python3 run.py
-   ```
+### 安装后配置
 
-3. 访问浏览器: `http://localhost:5000` 或 `http://<IP>:5000`
+1.  **修改配置**:
+    安装完成后，请编辑安装目录下的 `.env` 文件，填入地图 API 密钥
+    ```bash
+    TIANDITU_KEY=天地图API密钥
+    HOST=0.0.0.0
+    PORT=5005
+    ```
+
+2.  **重启服务**:
+    *   **macOS**: `launchctl kickstart -k gui/$(id -u)/com.omnilocation.web`
+    *   **Linux**: `sudo systemctl restart omni-web`
+
+3.  **访问控制台**:
+    在浏览器中打开 `http://localhost:5005` 或 `http://<设备IP>:5005`
+
+## 服务管理
+
+### macOS
+
+*   **停止服务**:
+    ```bash
+    launchctl unload ~/Library/LaunchAgents/com.omnilocation.web.plist
+    sudo launchctl unload /Library/LaunchDaemons/com.omnilocation.tunneld.plist
+    ```
+*   **查看日志**:
+    ```bash
+    tail -f ~/Projects/OmniLocation/logs/web.stderr.log
+    ```
+
+### Linux
+
+*   **停止服务**:
+    ```bash
+    sudo systemctl stop omni-web omni-tunneld
+    ```
+*   **查看日志**:
+    ```bash
+    journalctl -u omni-web -f
+    ```
+
+### 卸载
+
+如需移除本系统及所有相关服务，在安装目录下运行卸载脚本：
+
+```bash
+./uninstall.sh
+```
