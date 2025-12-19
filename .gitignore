@@ -26,7 +26,6 @@ instance/
 # Environment Variables
 .env
 .env.local
-.env.*
 
 # Project Specific Runtime Data
 # Database
