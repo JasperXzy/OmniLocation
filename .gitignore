@@ -1,0 +1,70 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+env/
+venv/
+.venv/
+pip-log.txt
+pip-delete-this-directory.txt
+.tox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+*.log
+.git-rewrite/
+
+# Flask
+instance/
+.webassets-cache
+
+# Environment Variables
+.env
+.env.local
+.env.*
+
+# Project Specific Runtime Data
+# Database
+devices.db
+devices.db-journal
+
+# Uploaded GPX files
+uploads/*
+!uploads/.gitkeep
+
+# Logs directory created by installer
+logs/
+
+# Generated Scripts
+start_tunneld_macos.sh
+start_web_macos.sh
+start_tunneld_linux.sh
+start_web_linux.sh
+uninstall.sh
+uninstall_temp.sh
+
+# Generated Service Files
+com.omnilocation.tunneld.plist
+*.service
+
+# IDEs / Editors
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+.project
+.settings/
+
+# External Tool Builds
+netmuxd_build/
+target/
+
+# Testing
+.pytest_cache/
+htmlcov/
