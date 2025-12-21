@@ -6,6 +6,12 @@ import random
 from typing import Any, Dict, List, Optional
 
 from core.device_manager import DevicePool, IOSDevice
+from core.exceptions import (
+    SimulationAlreadyRunningError,
+    SimulationNotRunningError,
+    NoDevicesAvailableError,
+    DeviceConnectionError,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -60,10 +66,14 @@ class Simulator:
             speed_multiplier: Factor to adjust playback speed (e.g., 2.0 is 2x speed).
             target_duration: Total desired duration in seconds (optional).
                              Used as fallback if points lack timestamps.
+        
+        Raises:
+            SimulationAlreadyRunningError: If simulation is already active.
+            NoDevicesAvailableError: If no valid devices are available.
         """
         if self.active:
             logger.warning("Simulation is already running.")
-            return
+            raise SimulationAlreadyRunningError()
 
         self._active_devices = []  # Reset active devices list
         for udid in udids:
@@ -74,14 +84,14 @@ class Simulator:
                         await dev.connect()
                     except Exception as e:
                         logger.error("Could not connect to %s, skipping. Error: %s", udid, e)
-                        continue
+                        raise DeviceConnectionError(udid, str(e))
                 self._active_devices.append(dev)
             else:
                 logger.warning("Device %s not found in pool.", udid)
 
         if not self._active_devices:
             logger.error("No valid devices available for simulation.")
-            return
+            raise NoDevicesAvailableError()
 
         self.active = True
         self._update_status(

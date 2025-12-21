@@ -6,6 +6,8 @@ from typing import Any, Dict, List, TypedDict
 
 import gpxpy
 
+from core.exceptions import GPXParseError, GPXEmptyError
+
 logger = logging.getLogger(__name__)
 
 
@@ -49,10 +51,14 @@ class GPXHandler:
             - total_duration: Total duration in seconds.
 
         Raises:
-            FileNotFoundError: If the specified GPX file does not exist.
-            gpxpy.gpx.GPXException: If the GPX file is malformed.
+            GPXParseError: If the GPX file cannot be parsed.
+            GPXEmptyError: If the GPX file contains no track points.
         """
         logger.info("Parsing GPX file: %s", self.file_path)
+        
+        if not self.file_path.exists():
+            raise GPXParseError(str(self.file_path), "File not found")
+        
         points: List[TrackPoint] = []
         try:
             with self.file_path.open('r', encoding='utf-8') as gpx_file:
@@ -75,11 +81,12 @@ class GPXHandler:
 
             if not points:
                 logger.warning("No track points found in %s", self.file_path)
-            else:
-                logger.info(
-                    "Loaded %d points. Dist: %.2fm, Dur: %.2fs",
-                    len(points), total_distance, total_duration
-                )
+                raise GPXEmptyError(str(self.file_path))
+            
+            logger.info(
+                "Loaded %d points. Dist: %.2fm, Dur: %.2fs",
+                len(points), total_distance, total_duration
+            )
 
             return {
                 "points": points,
@@ -87,9 +94,12 @@ class GPXHandler:
                 "total_duration": total_duration
             }
 
-        except FileNotFoundError:
-            logger.error("GPX file not found: %s", self.file_path)
+        except (GPXParseError, GPXEmptyError):
             raise
+        except gpxpy.gpx.GPXException as e:
+            logger.error("Invalid GPX format: %s", e)
+            raise GPXParseError(str(self.file_path), f"Invalid GPX format: {str(e)}")
         except Exception as e:
             logger.error("Error parsing GPX file: %s", e)
+            raise GPXParseError(str(self.file_path), str(e))
             raise

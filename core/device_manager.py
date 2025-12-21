@@ -22,6 +22,12 @@ try:
 except ImportError:
     ADB_AVAILABLE = False
 
+from core.exceptions import (
+    DatabaseError,
+    DeviceConnectionError,
+    DeviceControlError,
+)
+
 logger = logging.getLogger(__name__)
 
 DB_PATH = "devices.db"
@@ -30,7 +36,11 @@ ANDROID_INTENT_ACTION = "com.lexa.fakegps.START"
 
 
 def init_db() -> None:
-    """Initializes the SQLite database table if it does not exist."""
+    """Initializes the SQLite database table if it does not exist.
+    
+    Raises:
+        DatabaseError: If database initialization fails.
+    """
     try:
         with sqlite3.connect(DB_PATH) as conn:
             conn.execute(
@@ -46,6 +56,7 @@ def init_db() -> None:
             conn.commit()
     except sqlite3.Error as e:
         logger.error("Failed to initialize database: %s", e)
+        raise DatabaseError("initialization", str(e))
 
 
 def get_device_info_from_db(udid: str) -> Tuple[Optional[str], Optional[str]]:
@@ -80,6 +91,9 @@ def update_device_info_in_db(
         udid: The Unique Device Identifier.
         real_name: The device's factory name (optional).
         custom_name: The user-assigned name (optional).
+    
+    Raises:
+        DatabaseError: If database update fails.
     """
     try:
         with sqlite3.connect(DB_PATH) as conn:
@@ -106,6 +120,7 @@ def update_device_info_in_db(
             conn.commit()
     except sqlite3.Error as e:
         logger.error("Database error updating info for %s: %s", udid, e)
+        raise DatabaseError("update", str(e))
 
 
 class BaseDevice:
@@ -198,7 +213,7 @@ class IOSDevice(BaseDevice):
         """Connects to the iOS device and attempts to fetch its real name.
 
         Raises:
-            Exception: If connection fails.
+            DeviceConnectionError: If connection fails.
         """
         try:
             if self.connection_type == "wifi" and self.rsd_info:
@@ -215,7 +230,7 @@ class IOSDevice(BaseDevice):
         except Exception as e:
             self.connected = False
             logger.error("Failed to connect to %s: %s", self.udid, e)
-            raise
+            raise DeviceConnectionError(self.udid, str(e))
 
     def _fetch_device_name(self) -> None:
         """Fetches the device name from the Lockdown service."""
@@ -266,14 +281,19 @@ class IOSDevice(BaseDevice):
         Args:
             lat: Latitude.
             lon: Longitude.
+        
+        Raises:
+            DeviceControlError: If setting location fails.
         """
         if not self._service:
-            return
+            raise DeviceControlError(self.udid, "set location", "Service not available")
+        
         try:
             self._service.set(lat, lon)
         except Exception as e:
             logger.error("Error setting location for %s: %s", self.udid, e)
             self.connected = False
+            raise DeviceControlError(self.udid, "set location", str(e))
 
     def disconnect(self) -> None:
         """Stops simulation and closes connections."""

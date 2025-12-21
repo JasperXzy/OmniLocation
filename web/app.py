@@ -6,9 +6,17 @@ import os
 from typing import Any, Dict, List
 
 from flask import Flask, Response, current_app, jsonify, render_template, request
+from werkzeug.exceptions import HTTPException, RequestEntityTooLarge
 from werkzeug.utils import secure_filename
 
 from core.device_manager import DevicePool
+from core.exceptions import (
+    OmniLocationError,
+    ValidationError,
+    ResourceNotFoundError,
+    InvalidFileError,
+    GPXParseError,
+)
 from core.gpx_handler import GPXHandler
 from core.simulator import Simulator
 
@@ -59,6 +67,42 @@ def create_app(
     app.simulator = simulator      # type: ignore
     app.bg_loop = background_loop  # type: ignore
 
+    # Error Handlers
+    @app.errorhandler(OmniLocationError)
+    def handle_omnilocation_error(error: OmniLocationError) -> tuple:
+        """Handles all custom OmniLocation exceptions."""
+        logger.warning("OmniLocation error: %s [%s]", error.message, error.code)
+        return jsonify(error.to_dict()), error.status_code
+    
+    @app.errorhandler(RequestEntityTooLarge)
+    def handle_file_too_large(error: RequestEntityTooLarge) -> tuple:
+        """Handles file upload size limit exceeded."""
+        return jsonify({
+            'error': 'FILE_TOO_LARGE',
+            'message': 'File size exceeds 16MB limit',
+            'status': 413
+        }), 413
+    
+    @app.errorhandler(HTTPException)
+    def handle_http_exception(error: HTTPException) -> tuple:
+        """Handles standard HTTP exceptions."""
+        return jsonify({
+            'error': error.name.upper().replace(' ', '_'),
+            'message': error.description,
+            'status': error.code
+        }), error.code or 500
+    
+    @app.errorhandler(Exception)
+    def handle_unexpected_error(error: Exception) -> tuple:
+        """Handles all unexpected errors."""
+        logger.exception("Unexpected error: %s", str(error))
+        return jsonify({
+            'error': 'INTERNAL_SERVER_ERROR',
+            'message': 'An unexpected error occurred. Please try again later.',
+            'status': 500
+        }), 500
+
+    # Routes
     @app.route('/')
     def index() -> str:
         """Renders the main dashboard page."""
@@ -98,19 +142,21 @@ def create_app(
         """
         data = request.json
         if not data:
-            return jsonify({'error': 'Invalid JSON'}), 400
+            raise ValidationError('Request body must be valid JSON')
 
         udid = data.get('udid')
         new_name = data.get('name')
 
-        if not udid or not new_name:
-            return jsonify({'error': 'Missing udid or name'}), 400
+        if not udid:
+            raise ValidationError('Missing required field: udid', field='udid')
+        if not new_name:
+            raise ValidationError('Missing required field: name', field='name')
 
         success = current_app.device_pool.rename_device(udid, new_name)  # type: ignore
         if success:
             return jsonify({'message': 'Device renamed successfully'})
         else:
-            return jsonify({'error': 'Failed to rename device'}), 400
+            raise ResourceNotFoundError('Device', udid)
 
     @app.route('/api/upload', methods=['POST'])
     def upload_file() -> Any:
@@ -120,22 +166,31 @@ def create_app(
             JSON response indicating success or failure.
         """
         if 'file' not in request.files:
-            return jsonify({'error': 'No file part'}), 400
+            raise ValidationError('No file provided in request', field='file')
         
         file = request.files['file']
         if file.filename == '':
-            return jsonify({'error': 'No selected file'}), 400
+            raise ValidationError('No file selected', field='file')
         
-        if file and file.filename and allowed_file(file.filename):
-            filename = secure_filename(file.filename)
-            filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
+        if not file or not file.filename:
+            raise InvalidFileError('Invalid file upload')
+        
+        if not allowed_file(file.filename):
+            raise InvalidFileError('Only .gpx files are allowed', filename=file.filename)
+        
+        filename = secure_filename(file.filename)
+        filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
+        
+        try:
             file.save(filepath)
-            return jsonify({
-                'message': 'File uploaded successfully',
-                'filename': filename
-            })
+        except Exception as e:
+            logger.error("Failed to save file %s: %s", filename, e)
+            raise InvalidFileError(f'Failed to save file: {str(e)}', filename=filename)
         
-        return jsonify({'error': 'Invalid file type'}), 400
+        return jsonify({
+            'message': 'File uploaded successfully',
+            'filename': filename
+        })
 
     @app.route('/api/gpx_files', methods=['GET'])
     def list_gpx_files() -> Response:
@@ -166,13 +221,14 @@ def create_app(
         filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
         
         if not os.path.exists(filepath):
-            return jsonify({'error': 'File not found'}), 404
+            raise ResourceNotFoundError('GPX file', filename)
         
         try:
             os.remove(filepath)
             return jsonify({'success': True, 'message': f'Deleted {filename}'})
         except Exception as e:
-            return jsonify({'error': str(e)}), 500
+            logger.error("Failed to delete file %s: %s", filename, e)
+            raise InvalidFileError(f'Failed to delete file: {str(e)}', filename=filename)
 
     @app.route('/api/gpx_files/<filename>/details', methods=['GET'])
     def get_gpx_details(filename: str) -> Response:
@@ -185,7 +241,7 @@ def create_app(
         filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
         
         if not os.path.exists(filepath):
-            return jsonify({'error': 'File not found'}), 404
+            raise ResourceNotFoundError('GPX file', filename)
 
         try:
             handler = GPXHandler(filepath)
@@ -207,7 +263,8 @@ def create_app(
                 'points': serialized_points
             })
         except Exception as e:
-            return jsonify({'error': str(e)}), 500
+            logger.error("Failed to parse GPX file %s: %s", filename, e)
+            raise GPXParseError(filename, str(e))
 
     @app.route('/api/start', methods=['POST'])
     def start_simulation() -> Any:
@@ -218,7 +275,7 @@ def create_app(
         """
         data = request.json
         if not data:
-             return jsonify({'error': 'Invalid JSON'}), 400
+            raise ValidationError('Request body must be valid JSON')
 
         filename = data.get('filename')
         udids = data.get('udids', [])
@@ -228,12 +285,14 @@ def create_app(
         speed_multiplier = float(data.get('speed', 1.0))
         target_duration = data.get('target_duration')  # Optional, in seconds
 
-        if not filename or not udids:
-            return jsonify({'error': 'Missing filename or device selection'}), 400
+        if not filename:
+            raise ValidationError('Missing required field: filename', field='filename')
+        if not udids:
+            raise ValidationError('No devices selected for simulation', field='udids')
 
         filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
         if not os.path.exists(filepath):
-            return jsonify({'error': 'File not found'}), 404
+            raise ResourceNotFoundError('GPX file', filename)
 
         # Parse GPX
         try:
@@ -252,7 +311,7 @@ def create_app(
 
         except Exception as e:
             logger.error("Failed to parse GPX: %s", e)
-            return jsonify({'error': str(e)}), 500
+            raise GPXParseError(filename, str(e))
 
         # Run start in background loop
         async def schedule_start() -> None:
