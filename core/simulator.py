@@ -3,6 +3,7 @@
 import asyncio
 import logging
 import random
+import time
 from typing import Any, Dict, List, Optional
 
 from core.device_manager import DevicePool, IOSDevice
@@ -178,6 +179,9 @@ class Simulator:
                     if not self.active:
                         break
 
+                    # Record start time to account for execution overhead
+                    iteration_start = time.time()
+
                     lat, lon = point["lat"], point["lon"]
                     self.status["current_index"] = i
                     self.status["current_lat"] = lat
@@ -206,7 +210,12 @@ class Simulator:
                     elif sleep_time < 0:
                         sleep_time = 0.0
 
-                    await asyncio.sleep(sleep_time)
+                    # Subtract execution time to maintain accurate timing
+                    execution_time = time.time() - iteration_start
+                    adjusted_sleep = max(0, sleep_time - execution_time)
+                    
+                    if adjusted_sleep > 0:
+                        await asyncio.sleep(adjusted_sleep)
 
                 if not loop_track:
                     break
