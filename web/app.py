@@ -1,5 +1,6 @@
 """FastAPI application factory for the OmniLocation Web UI."""
 
+import asyncio
 import logging
 import os
 import shutil
@@ -132,7 +133,10 @@ def create_app() -> FastAPI:
     async def list_devices():
         """Lists connected devices after triggering a scan."""
         device_pool: DevicePool = app.state.device_pool
-        devices = device_pool.scan_usb_devices()
+        
+        # Run synchronous scan in a separate thread to avoid blocking the simulation loop
+        loop = asyncio.get_running_loop()
+        devices = await loop.run_in_executor(None, device_pool.scan_usb_devices)
         
         dev_list = []
         for d in devices:
