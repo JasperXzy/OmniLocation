@@ -8,6 +8,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // Map variables
     let map, routeLayer, markerLayer;
+    let ws; // WebSocket instance
 
     // --- DOM Elements ---
     const deviceListBody = document.getElementById('device-list');
@@ -54,6 +55,34 @@ document.addEventListener('DOMContentLoaded', () => {
         const cvaLayer = L.tileLayer(`http://t{s}.tianditu.gov.cn/cva_w/wmts?SERVICE=WMTS&REQUEST=GetTile&VERSION=1.0.0&LAYER=cva&STYLE=default&TILEMATRIXSET=w&FORMAT=tiles&TILEMATRIX={z}&TILEROW={y}&TILECOL={x}&tk=${tk}`, {
             subdomains: ['0', '1', '2', '3', '4', '5', '6', '7']
         }).addTo(map);
+    }
+
+    // --- WebSocket ---
+
+    function initWebSocket() {
+        const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+        const wsUrl = `${protocol}//${window.location.host}/ws/status`;
+        
+        ws = new WebSocket(wsUrl);
+
+        ws.onopen = () => {
+            console.log('WebSocket connected');
+        };
+
+        ws.onmessage = (event) => {
+            const status = JSON.parse(event.data);
+            handleStatusUpdate(status);
+        };
+
+        ws.onclose = () => {
+            console.log('WebSocket disconnected, reconnecting in 2s...');
+            setTimeout(initWebSocket, 2000);
+        };
+
+        ws.onerror = (error) => {
+            console.error('WebSocket error:', error);
+            ws.close();
+        };
     }
 
     // --- Devices ---
@@ -431,7 +460,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
         try {
             await axios.post('/api/start', payload);
-            // State update handled by pollStatus
+            // State update handled by WebSocket/polling
         } catch (e) {
             alert('Failed to start: ' + (e.response?.data?.error || e.message));
         }
@@ -466,69 +495,48 @@ document.addEventListener('DOMContentLoaded', () => {
     
     /**
      * Updates the UI elements based on the simulation state.
-     * @param {boolean} running - Whether the simulation is currently running.
-     * @param {number} currentIndex - The index of the current point in the GPX track.
-     * @param {number} totalPoints - The total number of points in the GPX track.
      */
-    function updateUI(running, currentIndex, totalPoints) {
-        isRunning = running;
-        if (currentIndex > 0) hasStarted = true;
-        if (currentIndex === 0 && !running) hasStarted = false;
+    function handleStatusUpdate(s) {
+        const total = s.total_points || 0;
+        const current = s.current_index || 0;
+        const running = s.running;
 
+        isRunning = running;
+        if (current > 0) hasStarted = true;
+        if (current === 0 && !running) hasStarted = false;
+
+        // Button States
         if (running) {
-            // State: Running
             toggleSimulationBtn.innerText = 'Pause';
             toggleSimulationBtn.className = 'btn btn-warning flex-grow-1';
             resetSimulationBtn.disabled = false;
-
             simulationStatus.innerText = 'Running';
             simulationStatus.className = 'status-running';
         } else {
-            // State: Stopped/Paused/Idle
-            resetSimulationBtn.disabled = !hasStarted; // Only enable Reset if we have actually started
-
-            if (hasStarted && currentIndex < totalPoints) {
-                // Paused
+            resetSimulationBtn.disabled = !hasStarted;
+            if (hasStarted && current < total) {
                 toggleSimulationBtn.innerText = 'Resume';
                 simulationStatus.innerText = 'Paused';
             } else {
-                // Idle or Completed
                 toggleSimulationBtn.innerText = 'Start';
                 simulationStatus.innerText = 'Idle';
             }
             toggleSimulationBtn.className = 'btn btn-success flex-grow-1';
             simulationStatus.className = 'status-stopped';
         }
-    }
 
-    /**
-     * Fetches the latest simulation status from the server and updates the UI.
-     */
-    async function pollStatus() {
-        try {
-            const res = await axios.get('/api/status');
-            const s = res.data;
+        // Progress Bar
+        const pct = total > 0 ? (current / total) * 100 : 0;
+        progressBar.style.width = pct + '%';
+        progressText.innerText = `${current} / ${total} points`;
 
-            // Pass all needed info to updateUI
-            const total = s.total_points || 0;
-            const current = s.current_index || 0;
-            updateUI(s.running, current, total);
-
-            const pct = total > 0 ? (current / total) * 100 : 0;
-            progressBar.style.width = pct + '%';
-            progressText.innerText = `${current} / ${total} points`;
-
-            // Update Map Marker
-            if (s.current_lat && s.current_lon) {
-                if (!markerLayer) {
-                    markerLayer = L.marker([s.current_lat, s.current_lon]).addTo(map);
-                } else {
-                    markerLayer.setLatLng([s.current_lat, s.current_lon]);
-                }
+        // Update Map Marker
+        if (s.current_lat && s.current_lon) {
+            if (!markerLayer) {
+                markerLayer = L.marker([s.current_lat, s.current_lon]).addTo(map);
+            } else {
+                markerLayer.setLatLng([s.current_lat, s.current_lon]);
             }
-
-        } catch (e) {
-            console.error(e);
         }
     }
 
@@ -549,8 +557,8 @@ document.addEventListener('DOMContentLoaded', () => {
     function initialize() {
         refreshDevices();
         loadFileList();
-        initMap(); // Initialize map
-        setInterval(pollStatus, 1000);
+        initMap();
+        initWebSocket(); // Connect WebSocket
     }
     
     initialize();

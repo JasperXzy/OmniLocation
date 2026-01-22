@@ -7,7 +7,7 @@ import shutil
 from contextlib import asynccontextmanager
 from typing import Any, Dict, List, Optional
 
-from fastapi import FastAPI, Request, HTTPException, UploadFile, File
+from fastapi import FastAPI, Request, HTTPException, UploadFile, File, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -37,6 +37,32 @@ os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 templates = Jinja2Templates(directory="web/templates")
 
 
+# --- WebSocket Manager ---
+
+class ConnectionManager:
+    """Manages active WebSocket connections."""
+    
+    def __init__(self):
+        self.active_connections: List[WebSocket] = []
+
+    async def connect(self, websocket: WebSocket):
+        await websocket.accept()
+        self.active_connections.append(websocket)
+
+    def disconnect(self, websocket: WebSocket):
+        self.active_connections.remove(websocket)
+
+    async def broadcast(self, message: Dict[str, Any]):
+        for connection in self.active_connections:
+            try:
+                await connection.send_json(message)
+            except Exception:
+                # Handle potential disconnects during send
+                pass
+
+manager = ConnectionManager()
+
+
 # --- Pydantic Models ---
 
 class RenameDeviceRequest(BaseModel):
@@ -58,6 +84,25 @@ def allowed_file(filename: str) -> bool:
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
 
 
+async def broadcast_status_loop(simulator: Simulator):
+    """Background task to broadcast simulation status via WebSocket."""
+    logger.info("Starting WebSocket broadcast loop...")
+    try:
+        while True:
+            # Only broadcast if there are connected clients
+            if manager.active_connections:
+                # If simulation is active, broadcast frequent updates (e.g., every 500ms)
+                # If idle, broadcast less frequently (e.g., every 2s) to save bandwidth
+                delay = 0.5 if simulator.active else 2.0
+                await manager.broadcast(simulator.status)
+            else:
+                delay = 1.0 # Check for clients every second
+            
+            await asyncio.sleep(delay)
+    except asyncio.CancelledError:
+        logger.info("WebSocket broadcast loop cancelled.")
+
+
 # --- Lifespan Manager (Startup/Shutdown) ---
 
 @asynccontextmanager
@@ -73,11 +118,19 @@ async def lifespan(app: FastAPI):
     
     logger.info("Core components initialized.")
     
+    # 2. Start Broadcast Task
+    broadcast_task = asyncio.create_task(broadcast_status_loop(simulator))
+    
     yield  # Application runs here
     
-    # 2. Cleanup
+    # 3. Cleanup
     logger.info("Shutting down core components...")
-    # Add any cleanup logic here (e.g., stopping simulator if running)
+    broadcast_task.cancel()
+    try:
+        await broadcast_task
+    except asyncio.CancelledError:
+        pass
+        
     await simulator.stop()
 
 
@@ -89,7 +142,7 @@ def create_app() -> FastAPI:
     app = FastAPI(
         title="OmniLocation",
         description="Distributed Multi-Device Location Simulation System",
-        version="2.0.0",
+        version="2.1.0",
         lifespan=lifespan
     )
 
@@ -118,7 +171,21 @@ def create_app() -> FastAPI:
             },
         )
 
-    # --- Routes ---
+    # --- WebSocket Route ---
+    
+    @app.websocket("/ws/status")
+    async def websocket_endpoint(websocket: WebSocket):
+        await manager.connect(websocket)
+        try:
+            while True:
+                # Keep connection alive, maybe receive commands in future
+                await websocket.receive_text()
+        except WebSocketDisconnect:
+            manager.disconnect(websocket)
+        except Exception:
+            manager.disconnect(websocket)
+
+    # --- HTTP Routes ---
 
     @app.get("/", response_class=HTMLResponse)
     async def index(request: Request):
@@ -305,7 +372,7 @@ def create_app() -> FastAPI:
 
     @app.get("/api/status")
     async def get_status():
-        """Gets real-time simulation status."""
+        """Gets real-time simulation status (Fallback for polling)."""
         simulator: Simulator = app.state.simulator
         return simulator.status
 
