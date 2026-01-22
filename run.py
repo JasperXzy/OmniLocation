@@ -1,81 +1,44 @@
-"""Entry point for the OmniLocation Server.
+"""Entry point for the OmniLocation Server (FastAPI).
 
-Starts the background asyncio loop for device simulation and the Flask
-web server for user interaction. Configuration is loaded from .env file.
+Starts the Uvicorn server which hosts the FastAPI application.
+Configuration is loaded from .env file.
 """
 
-import asyncio
 import logging
 import os
-import threading
-
+import uvicorn
 from dotenv import load_dotenv
 
-from core.device_manager import DevicePool
 from core.logger import setup_logging
-from core.simulator import Simulator
 from web.app import create_app
 
-# Load environment variables from .env file
+# Load environment variables
 load_dotenv()
 
-# Configure logging with rotation
+# Configure logging
 setup_logging(
     log_dir="logs",
     log_filename="omni_web.log",
-    max_bytes=10*1024*1024,  # 10MB
+    max_bytes=10*1024*1024,
     backup_count=5
 )
 logger = logging.getLogger(__name__)
 
-
-def run_loop(loop: asyncio.AbstractEventLoop) -> None:
-    """Runs the asyncio event loop forever.
-
-    Args:
-        loop: The asyncio event loop to run.
-    """
-    asyncio.set_event_loop(loop)
-    loop.run_forever()
-
-
 def main() -> None:
-    """Main execution function.
-
-    Initializes core components, starts the background asyncio thread,
-    and runs the Flask web server using configuration from environment variables.
-    """
-    # 1. Setup Asyncio Loop in a Background Thread
-    bg_loop = asyncio.new_event_loop()
-    t = threading.Thread(target=run_loop, args=(bg_loop,), daemon=True)
-    t.start()
-    logger.info("Background asyncio loop started.")
-
-    # 2. Initialize Core Components
-    device_pool = DevicePool()
-    simulator = Simulator(device_pool)
-
-    # 3. Create Web App
-    app = create_app(device_pool, simulator, bg_loop)
-
-    # 4. Run Flask (Blocking)
+    """Main execution function."""
     host = os.getenv("HOST", "0.0.0.0")
     port = int(os.getenv("PORT", 5005))
     
-    logger.info("Starting Web UI at http://%s:%d", host, port)
+    logger.info("Starting OmniLocation Server (FastAPI) at http://%s:%d", host, port)
     
-    try:
-        # use_reloader=False is important when using background threads
-        # to avoid duplicates
-        app.run(host=host, port=port, debug=False, use_reloader=False)
-    except KeyboardInterrupt:
-        pass
-    finally:
-        logger.info("Shutting down...")
-        # Clean up async loop
-        bg_loop.call_soon_threadsafe(bg_loop.stop)
-        t.join()
-
+    app = create_app()
+    
+    uvicorn.run(
+        app,
+        host=host,
+        port=port,
+        log_level="info",
+    )
 
 if __name__ == "__main__":
     main()

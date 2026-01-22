@@ -1,4 +1,7 @@
-flask
+fastapi
+uvicorn[standard]
+python-multipart
+jinja2
 pymobiledevice3
 gpxpy
 python-dotenv
