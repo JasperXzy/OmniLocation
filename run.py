@@ -12,16 +12,19 @@ import threading
 from dotenv import load_dotenv
 
 from core.device_manager import DevicePool
+from core.logger import setup_logging
 from core.simulator import Simulator
 from web.app import create_app
 
 # Load environment variables from .env file
 load_dotenv()
 
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+# Configure logging with rotation
+setup_logging(
+    log_dir="logs",
+    log_filename="omni_web.log",
+    max_bytes=10*1024*1024,  # 10MB
+    backup_count=5
 )
 logger = logging.getLogger(__name__)
 
