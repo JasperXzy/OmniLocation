@@ -207,10 +207,30 @@ clone_repo() {
 
 install_macos() {
   log_info "Detected OS: macOS"
-  
+
   # 1. Python Env
   log_info "Setting up Python environment..."
-  if [[ ! -d "venv" ]]; then python3 -m venv venv; fi
+
+  # iOS 18.2+ requires Python 3.13+ for TCP tunnel support
+  local python_bin
+  if command -v python3.13 &>/dev/null; then
+    python_bin="python3.13"
+  elif [[ -x "/opt/homebrew/bin/python3.13" ]]; then
+    python_bin="/opt/homebrew/bin/python3.13"
+  elif [[ -x "/usr/local/bin/python3.13" ]]; then
+    python_bin="/usr/local/bin/python3.13"
+  else
+    log_info "Python 3.13 not found. Installing via Homebrew..."
+    if ! command -v brew &>/dev/null; then
+      log_err "Homebrew not found. Please install it first: https://brew.sh"
+      exit 1
+    fi
+    brew install python@3.13
+    python_bin="$(brew --prefix)/bin/python3.13"
+  fi
+  log_info "Using $($python_bin --version)"
+
+  if [[ ! -d "venv" ]]; then "$python_bin" -m venv venv; fi
   source venv/bin/activate
   
   local pip_args="-r requirements.txt"
@@ -432,15 +452,29 @@ EOF
   log_info "Deploying OmniLocation App..."
   cd "$PROJECT_DIR"
 
-  if [[ ! -d "venv" ]]; then python3 -m venv venv; fi
+  # iOS 18.2+ requires Python 3.13+ for TCP tunnel support
+  local python_bin
+  if command -v python3.13 &>/dev/null; then
+    python_bin="python3.13"
+  else
+    log_info "Python 3.13 not found. Installing via deadsnakes PPA..."
+    run_sudo apt-get install -y software-properties-common
+    run_sudo add-apt-repository -y ppa:deadsnakes/ppa
+    run_sudo apt-get update -qq
+    run_sudo apt-get install -y python3.13 python3.13-venv python3.13-dev
+    python_bin="python3.13"
+  fi
+  log_info "Using $($python_bin --version)"
+
+  if [[ ! -d "venv" ]]; then "$python_bin" -m venv venv; fi
   source venv/bin/activate
-  
+
   local pip_args="-r requirements.txt"
   if [[ "$IS_CHINA" == "true" ]]; then
     pip_args="$pip_args -i https://pypi.tuna.tsinghua.edu.cn/simple"
   fi
   pip install $pip_args
-  
+
   init_env_file
   mkdir -p logs
 
