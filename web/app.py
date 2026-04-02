@@ -192,18 +192,16 @@ def create_app() -> FastAPI:
         """Renders the main dashboard page."""
         tianditu_key = os.getenv("TIANDITU_KEY", "")
         return templates.TemplateResponse(
-            "index.html", 
-            {"request": request, "tianditu_key": tianditu_key}
+            request,
+            "index.html",
+            {"tianditu_key": tianditu_key}
         )
 
     @app.get("/api/devices")
     async def list_devices():
         """Lists connected devices after triggering a scan."""
         device_pool: DevicePool = app.state.device_pool
-        
-        # Run synchronous scan in a separate thread to avoid blocking the simulation loop
-        loop = asyncio.get_running_loop()
-        devices = await loop.run_in_executor(None, device_pool.scan_usb_devices)
+        devices = await device_pool.scan_usb_devices()
         
         dev_list = []
         for d in devices:

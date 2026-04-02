@@ -9,7 +9,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from pymobiledevice3.exceptions import InvalidServiceError
 from pymobiledevice3.lockdown import create_using_usbmux
 from pymobiledevice3.remote.remote_service_discovery import RemoteServiceDiscoveryService
-from pymobiledevice3.services.dvt.dvt_secure_socket_proxy import DvtSecureSocketProxyService
+from pymobiledevice3.services.dvt.instruments.dvt_provider import DvtProvider
 from pymobiledevice3.services.dvt.instruments.location_simulation import LocationSimulation
 from pymobiledevice3.services.simulate_location import DtSimulateLocation
 from pymobiledevice3.usbmux import list_devices as list_ios_devices
@@ -160,7 +160,7 @@ class BaseDevice:
         """Establishes a connection to the device."""
         raise NotImplementedError
 
-    def set_location(self, lat: float, lon: float) -> None:
+    async def set_location(self, lat: float, lon: float) -> None:
         """Updates the device's location.
 
         Args:
@@ -169,7 +169,7 @@ class BaseDevice:
         """
         raise NotImplementedError
 
-    def disconnect(self) -> None:
+    async def disconnect(self) -> None:
         """Closes the connection to the device."""
         raise NotImplementedError
 
@@ -219,7 +219,7 @@ class IOSDevice(BaseDevice):
             if self.connection_type == "wifi" and self.rsd_info:
                 await self._connect_rsd()
             else:
-                self._connect_usb()
+                await self._connect_usb()
             
             self.connected = True
             logger.info("Device %s connected via %s", self.udid, self.connection_type)
@@ -249,19 +249,20 @@ class IOSDevice(BaseDevice):
         """Internal method to connect via Remote Service Discovery (RSD)."""
         if not self.rsd_info:
             raise ValueError("RSD info is missing.")
-        
+
         host, port = self.rsd_info
         logger.info("Connecting via RSD: %s:%s", host, port)
-        
+
         rsd = RemoteServiceDiscoveryService((host, int(port)))
         await rsd.connect()
 
         self._lockdown = rsd
-        self._dvt_context = DvtSecureSocketProxyService(rsd)
-        self._dvt_context.__enter__()
+        self._dvt_context = DvtProvider(rsd)
+        await self._dvt_context.__aenter__()
         self._service = LocationSimulation(self._dvt_context)
+        await self._service.__aenter__()
 
-    def _connect_usb(self) -> None:
+    async def _connect_usb(self) -> None:
         """Internal method to connect via standard USB mux."""
         logger.info("Connecting via USB: %s", self.serial)
         self._lockdown = create_using_usbmux(serial=self.serial)
@@ -271,41 +272,47 @@ class IOSDevice(BaseDevice):
             self._service = DtSimulateLocation(self._lockdown)
         except InvalidServiceError:
             logger.info("DtSimulateLocation not available, trying DVT...")
-            self._dvt_context = DvtSecureSocketProxyService(self._lockdown)
-            self._dvt_context.__enter__()
+            self._dvt_context = DvtProvider(self._lockdown)
+            await self._dvt_context.__aenter__()
             self._service = LocationSimulation(self._dvt_context)
+            await self._service.__aenter__()
 
-    def set_location(self, lat: float, lon: float) -> None:
+    async def set_location(self, lat: float, lon: float) -> None:
         """Sets the simulated location on the device.
 
         Args:
             lat: Latitude.
             lon: Longitude.
-        
+
         Raises:
             DeviceControlError: If setting location fails.
         """
         if not self._service:
             raise DeviceControlError(self.udid, "set location", "Service not available")
-        
+
         try:
-            self._service.set(lat, lon)
+            await self._service.set(lat, lon)
         except Exception as e:
             logger.error("Error setting location for %s: %s", self.udid, e)
             self.connected = False
             raise DeviceControlError(self.udid, "set location", str(e))
 
-    def disconnect(self) -> None:
+    async def disconnect(self) -> None:
         """Stops simulation and closes connections."""
         if self._service:
             try:
-                self._service.clear()
+                await self._service.clear()
             except Exception:
                 pass
+            if self._dvt_context:
+                try:
+                    await self._service.__aexit__(None, None, None)
+                except Exception:
+                    pass
 
         if self._dvt_context:
             try:
-                self._dvt_context.__exit__(None, None, None)
+                await self._dvt_context.__aexit__(None, None, None)
             except Exception:
                 pass
         self.connected = False
@@ -354,9 +361,9 @@ class AndroidDevice(BaseDevice):
             logger.error("Failed to connect to Android %s: %s", self.serial, e)
             raise
 
-    def set_location(self, lat: float, lon: float) -> None:
+    async def set_location(self, lat: float, lon: float) -> None:
         """Sets the location by sending a startservice intent to Fake GPS.
-        
+
         Args:
             lat: Latitude.
             lon: Longitude.
@@ -376,7 +383,7 @@ class AndroidDevice(BaseDevice):
             logger.error("Error setting location for Android %s: %s", self.serial, e)
             self.connected = False
 
-    def disconnect(self) -> None:
+    async def disconnect(self) -> None:
         """Disconnects the device (logical disconnect)."""
         self.connected = False
 
@@ -395,12 +402,12 @@ class DevicePool:
             except Exception as e:
                 logger.warning("Failed to initialize ADB client: %s", e)
 
-    def scan_usb_devices(self) -> List[BaseDevice]:
+    async def scan_usb_devices(self) -> List[BaseDevice]:
         """Scans for connected devices via USB, Tunneld, and ADB."""
         found_devices: List[BaseDevice] = []
-        
+
         # --- 1. iOS Scanning ---
-        ios_devices = list_ios_devices()
+        ios_devices = await list_ios_devices()
         tunnel_map: Dict[str, Tuple[str, int]] = {}
         try:
             # pylint: disable=import-outside-toplevel, protected-access

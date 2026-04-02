@@ -130,7 +130,7 @@ class Simulator:
         logger.info("Resetting locations for %d devices...", len(self._active_devices))
         for dev in self._active_devices:
             try:
-                dev.disconnect() # This clears the location override
+                await dev.disconnect()  # This clears the location override
             except Exception as e:
                 logger.error("Error resetting device %s: %s", dev.udid, e)
         
@@ -192,7 +192,7 @@ class Simulator:
                     for dev in devices:
                         jitter_lat = lat + random.uniform(-0.00002, 0.00002)
                         jitter_lon = lon + random.uniform(-0.00002, 0.00002)
-                        dev.set_location(jitter_lat, jitter_lon)
+                        await dev.set_location(jitter_lat, jitter_lon)
 
                     # Calculate sleep time
                     sleep_time = constant_delay
