@@ -3,37 +3,26 @@
 import asyncio
 import logging
 import os
-import shutil
 from contextlib import asynccontextmanager
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
-from fastapi import FastAPI, Request, HTTPException, UploadFile, File, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
-from pydantic import BaseModel, Field
 
 from core.device_manager import DevicePool
-from core.exceptions import (
-    OmniLocationError,
-    ValidationError,
-    ResourceNotFoundError,
-    InvalidFileError,
-    GPXParseError,
-)
-from core.gpx_handler import GPXHandler
+from core.exceptions import OmniLocationError
 from core.simulator import Simulator
-
-# Configuration
-UPLOAD_FOLDER = 'uploads'
-ALLOWED_EXTENSIONS = {'gpx'}
+from web.routers import devices as devices_router
+from web.routers import gpx as gpx_router
+from web.routers import simulation as simulation_router
 
 logger = logging.getLogger(__name__)
 
 # Ensure upload folder exists
-os.makedirs(UPLOAD_FOLDER, exist_ok=True)
+os.makedirs(gpx_router.UPLOAD_FOLDER, exist_ok=True)
 
-# Templates
 templates = Jinja2Templates(directory="web/templates")
 
 
@@ -41,7 +30,7 @@ templates = Jinja2Templates(directory="web/templates")
 
 class ConnectionManager:
     """Manages active WebSocket connections."""
-    
+
     def __init__(self):
         self.active_connections: List[WebSocket] = []
 
@@ -50,38 +39,21 @@ class ConnectionManager:
         self.active_connections.append(websocket)
 
     def disconnect(self, websocket: WebSocket):
-        self.active_connections.remove(websocket)
+        if websocket in self.active_connections:
+            self.active_connections.remove(websocket)
 
     async def broadcast(self, message: Dict[str, Any]):
+        stale: List[WebSocket] = []
         for connection in self.active_connections:
             try:
                 await connection.send_json(message)
             except Exception:
-                # Handle potential disconnects during send
-                pass
+                stale.append(connection)
+        for connection in stale:
+            self.disconnect(connection)
+
 
 manager = ConnectionManager()
-
-
-# --- Pydantic Models ---
-
-class RenameDeviceRequest(BaseModel):
-    udid: str
-    name: str
-
-class StartSimulationRequest(BaseModel):
-    filename: str
-    udids: List[str]
-    loop: bool = False
-    speed: float = 1.0
-    target_duration: Optional[float] = None
-
-
-# --- Helper Functions ---
-
-def allowed_file(filename: str) -> bool:
-    """Checks if the file extension is allowed."""
-    return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
 
 
 async def broadcast_status_loop(simulator: Simulator):
@@ -89,48 +61,40 @@ async def broadcast_status_loop(simulator: Simulator):
     logger.info("Starting WebSocket broadcast loop...")
     try:
         while True:
-            # Only broadcast if there are connected clients
             if manager.active_connections:
-                # If simulation is active, broadcast frequent updates (e.g., every 500ms)
-                # If idle, broadcast less frequently (e.g., every 2s) to save bandwidth
                 delay = 0.5 if simulator.active else 2.0
                 await manager.broadcast(simulator.status)
             else:
-                delay = 1.0 # Check for clients every second
-            
+                delay = 1.0
             await asyncio.sleep(delay)
     except asyncio.CancelledError:
         logger.info("WebSocket broadcast loop cancelled.")
 
 
-# --- Lifespan Manager (Startup/Shutdown) ---
+# --- Lifespan ---
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Manages the application lifecycle and shared resources."""
-    # 1. Initialize Core Components
     device_pool = DevicePool()
     simulator = Simulator(device_pool)
-    
-    # Store in app.state for access in route handlers
+
     app.state.device_pool = device_pool
     app.state.simulator = simulator
-    
+
     logger.info("Core components initialized.")
-    
-    # 2. Start Broadcast Task
+
     broadcast_task = asyncio.create_task(broadcast_status_loop(simulator))
-    
-    yield  # Application runs here
-    
-    # 3. Cleanup
+
+    yield
+
     logger.info("Shutting down core components...")
     broadcast_task.cancel()
     try:
         await broadcast_task
     except asyncio.CancelledError:
         pass
-        
+
     await simulator.stop()
 
 
@@ -138,15 +102,14 @@ async def lifespan(app: FastAPI):
 
 def create_app() -> FastAPI:
     """Creates and configures the FastAPI application."""
-    
+
     app = FastAPI(
         title="OmniLocation",
         description="Distributed Multi-Device Location Simulation System",
         version="2.1.0",
-        lifespan=lifespan
+        lifespan=lifespan,
     )
 
-    # Mount static files
     app.mount("/static", StaticFiles(directory="web/static"), name="static")
 
     # --- Exception Handlers ---
@@ -154,10 +117,7 @@ def create_app() -> FastAPI:
     @app.exception_handler(OmniLocationError)
     async def omnilocation_exception_handler(request: Request, exc: OmniLocationError):
         logger.warning("OmniLocation error: %s [%s]", exc.message, exc.code)
-        return JSONResponse(
-            status_code=exc.status_code,
-            content=exc.to_dict(),
-        )
+        return JSONResponse(status_code=exc.status_code, content=exc.to_dict())
 
     @app.exception_handler(Exception)
     async def global_exception_handler(request: Request, exc: Exception):
@@ -167,211 +127,35 @@ def create_app() -> FastAPI:
             content={
                 "error": "INTERNAL_SERVER_ERROR",
                 "message": "An unexpected error occurred. Please try again later.",
-                "status": 500
+                "status": 500,
             },
         )
 
-    # --- WebSocket Route ---
-    
+    # --- WebSocket ---
+
     @app.websocket("/ws/status")
     async def websocket_endpoint(websocket: WebSocket):
         await manager.connect(websocket)
         try:
             while True:
-                # Keep connection alive, maybe receive commands in future
                 await websocket.receive_text()
         except WebSocketDisconnect:
             manager.disconnect(websocket)
         except Exception:
             manager.disconnect(websocket)
 
-    # --- HTTP Routes ---
+    # --- HTML ---
 
     @app.get("/", response_class=HTMLResponse)
     async def index(request: Request):
-        """Renders the main dashboard page."""
         tianditu_key = os.getenv("TIANDITU_KEY", "")
         return templates.TemplateResponse(
-            request,
-            "index.html",
-            {"tianditu_key": tianditu_key}
+            request, "index.html", {"tianditu_key": tianditu_key}
         )
 
-    @app.get("/api/devices")
-    async def list_devices():
-        """Lists connected devices after triggering a scan."""
-        device_pool: DevicePool = app.state.device_pool
-        devices = await device_pool.scan_usb_devices()
-        
-        dev_list = []
-        for d in devices:
-            device_type = 'iOS' if d.__class__.__name__ == 'IOSDevice' else 'Android'
-            dev_list.append({
-                'udid': d.udid,
-                'name': d.name,
-                'real_name': d.real_name,
-                'device_type': device_type,
-                'connection_type': d.connection_type,
-                'connected': d.connected
-            })
-        return dev_list
-
-    @app.post("/api/devices/rename")
-    async def rename_device(req: RenameDeviceRequest):
-        """Renames a device."""
-        device_pool: DevicePool = app.state.device_pool
-        success = device_pool.rename_device(req.udid, req.name)
-        if success:
-            return {"message": "Device renamed successfully"}
-        else:
-            raise ResourceNotFoundError('Device', req.udid)
-
-    @app.post("/api/upload")
-    async def upload_file(file: UploadFile = File(...)):
-        """Handles GPX file uploads."""
-        if not file.filename:
-            raise ValidationError('No file selected', field='file')
-        
-        if not allowed_file(file.filename):
-            raise InvalidFileError('Only .gpx files are allowed', filename=file.filename)
-        
-        # Simple security check (FastAPI UploadFile.filename is user-provided)
-        filename = os.path.basename(file.filename) 
-        filepath = os.path.join(UPLOAD_FOLDER, filename)
-        
-        try:
-            with open(filepath, "wb") as buffer:
-                shutil.copyfileobj(file.file, buffer)
-        except Exception as e:
-            logger.error("Failed to save file %s: %s", filename, e)
-            raise InvalidFileError(f'Failed to save file: {str(e)}', filename=filename)
-            
-        return {
-            'message': 'File uploaded successfully',
-            'filename': filename
-        }
-
-    @app.get("/api/gpx_files")
-    async def list_gpx_files():
-        """Lists available GPX files."""
-        files = []
-        if os.path.exists(UPLOAD_FOLDER):
-            files = [
-                f for f in os.listdir(UPLOAD_FOLDER)
-                if f.endswith('.gpx')
-            ]
-        return files
-
-    @app.delete("/api/gpx_files/{filename}")
-    async def delete_gpx_file(filename: str):
-        """Deletes a GPX file."""
-        # Prevent directory traversal
-        filename = os.path.basename(filename)
-        filepath = os.path.join(UPLOAD_FOLDER, filename)
-        
-        if not os.path.exists(filepath):
-            raise ResourceNotFoundError('GPX file', filename)
-        
-        try:
-            os.remove(filepath)
-            return {'success': True, 'message': f'Deleted {filename}'}
-        except Exception as e:
-            logger.error("Failed to delete file %s: %s", filename, e)
-            raise InvalidFileError(f'Failed to delete file: {str(e)}', filename=filename)
-
-    @app.get("/api/gpx_files/{filename}/details")
-    async def get_gpx_details(filename: str):
-        """Gets metadata for a specific GPX file."""
-        filename = os.path.basename(filename)
-        filepath = os.path.join(UPLOAD_FOLDER, filename)
-        
-        if not os.path.exists(filepath):
-            raise ResourceNotFoundError('GPX file', filename)
-
-        try:
-            handler = GPXHandler(filepath)
-            data = handler.parse()
-            
-            # Serialize points
-            serialized_points = []
-            for p in data['points']:
-                point_dict = p.copy()
-                if point_dict.get('time'):
-                    point_dict['time'] = point_dict['time'].isoformat()
-                serialized_points.append(point_dict)
-
-            return {
-                'filename': filename,
-                'total_distance': data['total_distance'],
-                'total_duration': data['total_duration'],
-                'point_count': len(data['points']),
-                'points': serialized_points
-            }
-        except Exception as e:
-            logger.error("Failed to parse GPX file %s: %s", filename, e)
-            raise GPXParseError(filename, str(e))
-
-    @app.post("/api/start")
-    async def start_simulation(req: StartSimulationRequest):
-        """Starts the simulation."""
-        simulator: Simulator = app.state.simulator
-        
-        filepath = os.path.join(UPLOAD_FOLDER, req.filename)
-        if not os.path.exists(filepath):
-            raise ResourceNotFoundError('GPX file', req.filename)
-
-        if not req.udids:
-            raise ValidationError('No devices selected for simulation', field='udids')
-
-        # Parse GPX
-        try:
-            handler = GPXHandler(filepath)
-            gpx_data = handler.parse()
-            points = gpx_data['points']
-            original_duration = gpx_data['total_duration']
-            
-            speed_multiplier = req.speed
-            
-            # Recalculate speed if target_duration is provided
-            if req.target_duration is not None:
-                if req.target_duration > 0 and original_duration > 0:
-                    speed_multiplier = original_duration / req.target_duration
-                    logger.info("Calculated speed %.2f based on target duration %.2fs", 
-                                speed_multiplier, req.target_duration)
-
-        except Exception as e:
-            logger.error("Failed to parse GPX: %s", e)
-            raise GPXParseError(req.filename, str(e))
-
-        # Start simulation (Native Async Await!)
-        await simulator.start(
-            points, req.udids, loop_track=req.loop, speed_multiplier=speed_multiplier
-        )
-
-        return {
-            'message': 'Simulation started',
-            'device_count': len(req.udids),
-            'speed_multiplier': speed_multiplier
-        }
-
-    @app.post("/api/stop")
-    async def stop_simulation():
-        """Stops the simulation."""
-        simulator: Simulator = app.state.simulator
-        await simulator.stop()
-        return {'message': 'Simulation paused'}
-
-    @app.post("/api/reset")
-    async def reset_simulation():
-        """Resets the simulation."""
-        simulator: Simulator = app.state.simulator
-        await simulator.reset()
-        return {'message': 'Simulation reset and location cleared'}
-
-    @app.get("/api/status")
-    async def get_status():
-        """Gets real-time simulation status (Fallback for polling)."""
-        simulator: Simulator = app.state.simulator
-        return simulator.status
+    # --- API Routers ---
+    app.include_router(devices_router.router)
+    app.include_router(gpx_router.router)
+    app.include_router(simulation_router.router)
 
     return app

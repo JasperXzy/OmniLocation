@@ -2,120 +2,231 @@
 
 document.addEventListener('DOMContentLoaded', () => {
 
-    let currentGpxDuration = 0; // in seconds
+    let currentGpxDuration = 0; // seconds
     let isRunning = false;
-    let hasStarted = false; // To track if we are in 'Resume' state
+    let hasStarted = false;
 
-    // Map variables
-    let map, routeLayer, markerLayer;
-    let ws; // WebSocket instance
+    // Map / WS
+    let map;
+    let routeLayer;        // full planned route (red)
+    let traveledLayer;     // walked-so-far overlay (green)
+    let traveledLatLngs = [];
+    let markerLayer;
+    let currentRoutePoints = [];
+    let ws;
 
-    // --- DOM Elements ---
-    const deviceListBody = document.getElementById('device-list');
-    const selectAllCheckbox = document.getElementById('select-all-checkbox');
-    const refreshDevicesBtn = document.getElementById('refresh-devices-btn');
-    const gpxUploadInput = document.getElementById('gpx-upload-input');
-    const gpxUploadLabel = document.getElementById('gpx-upload-label');
-    const uploadGpxBtn = document.getElementById('upload-gpx-btn');
-    const gpxSelect = document.getElementById('gpx-select');
-    const fileCountBadge = document.getElementById('file-count-badge');
-    const deleteFileBtn = document.getElementById('delete-file-btn');
-    const refreshFileListBtn = document.getElementById('refresh-file-list-btn');
-    const routeMetadataDiv = document.getElementById('route-metadata');
-    const metadataDistance = document.getElementById('metadata-distance');
-    const metadataDuration = document.getElementById('metadata-duration');
-    const metadataPoints = document.getElementById('metadata-points');
-    const targetDurationInput = document.getElementById('target-duration-input');
-    const speedMultiplierInput = document.getElementById('speed-multiplier-input');
-    const loopCheckbox = document.getElementById('loop-checkbox');
-    const toggleSimulationBtn = document.getElementById('toggle-simulation-btn');
-    const resetSimulationBtn = document.getElementById('reset-simulation-btn');
-    const simulationStatus = document.getElementById('simulation-status');
-    const progressBar = document.getElementById('progress-bar');
-    const progressText = document.getElementById('progress-text');
+    // --- DOM ---
+    const $ = (id) => document.getElementById(id);
+    const deviceListBody = $('device-list');
+    const selectAllCheckbox = $('select-all-checkbox');
+    const refreshDevicesBtn = $('refresh-devices-btn');
+    const refreshDevicesSpinner = $('refresh-devices-spinner');
+    const gpxUploadInput = $('gpx-upload-input');
+    const gpxUploadLabel = $('gpx-upload-label');
+    const uploadGpxBtn = $('upload-gpx-btn');
+    const uploadGpxSpinner = $('upload-gpx-spinner');
+    const gpxSelect = $('gpx-select');
+    const fileCountBadge = $('file-count-badge');
+    const deleteFileBtn = $('delete-file-btn');
+    const refreshFileListBtn = $('refresh-file-list-btn');
+    const routeMetadataDiv = $('route-metadata');
+    const metadataDistance = $('metadata-distance');
+    const metadataDuration = $('metadata-duration');
+    const metadataPoints = $('metadata-points');
+    const targetDurationInput = $('target-duration-input');
+    const speedMultiplierInput = $('speed-multiplier-input');
+    const loopCheckbox = $('loop-checkbox');
+    const toggleSimulationBtn = $('toggle-simulation-btn');
+    const resetSimulationBtn = $('reset-simulation-btn');
+    const simulationStatus = $('simulation-status');
+    const progressBar = $('progress-bar');
+    const progressText = $('progress-text');
+    const toastContainer = $('toast-container');
 
-    // --- Map Initialization ---
+    // Bootstrap modal instances
+    const renameModalEl = $('rename-modal');
+    const renameModal = new bootstrap.Modal(renameModalEl);
+    const renameModalInput = $('rename-modal-input');
+    const renameModalUdid = $('rename-modal-udid');
+    const renameModalConfirm = $('rename-modal-confirm');
 
-    /**
-     * Initializes the Leaflet map with TianDiTu layers.
-     */
+    const confirmModalEl = $('confirm-modal');
+    const confirmModal = new bootstrap.Modal(confirmModalEl);
+    const confirmModalBody = $('confirm-modal-body');
+    const confirmModalConfirm = $('confirm-modal-confirm');
+    let confirmCallback = null;
+
+    // --- HTTP helper (replaces axios) ---
+
+    async function request(method, url, body, isForm) {
+        const opts = { method, headers: {} };
+        if (body !== undefined) {
+            if (isForm) {
+                opts.body = body;
+            } else {
+                opts.headers['Content-Type'] = 'application/json';
+                opts.body = JSON.stringify(body);
+            }
+        }
+        const res = await fetch(url, opts);
+        let data = null;
+        const text = await res.text();
+        if (text) {
+            try { data = JSON.parse(text); } catch (e) { data = text; }
+        }
+        if (!res.ok) {
+            const msg = (data && data.message) || (data && data.error) || res.statusText;
+            const err = new Error(msg);
+            err.status = res.status;
+            err.data = data;
+            throw err;
+        }
+        return data;
+    }
+    const api = {
+        get: (url) => request('GET', url),
+        post: (url, body) => request('POST', url, body),
+        del: (url) => request('DELETE', url),
+        upload: (url, formData) => request('POST', url, formData, true),
+    };
+
+    // --- Toast / Modal helpers ---
+
+    function showToast(message, variant) {
+        variant = variant || 'primary';
+        const toastEl = document.createElement('div');
+        toastEl.className = `toast align-items-center text-bg-${variant} border-0`;
+        toastEl.setAttribute('role', 'alert');
+        toastEl.setAttribute('aria-live', 'assertive');
+        toastEl.setAttribute('aria-atomic', 'true');
+        toastEl.innerHTML = `
+            <div class="d-flex">
+                <div class="toast-body"></div>
+                <button type="button" class="btn-close btn-close-white me-2 m-auto" data-bs-dismiss="toast" aria-label="Close"></button>
+            </div>`;
+        toastEl.querySelector('.toast-body').textContent = message;
+        toastContainer.appendChild(toastEl);
+        const t = new bootstrap.Toast(toastEl, { delay: 3500 });
+        t.show();
+        toastEl.addEventListener('hidden.bs.toast', () => toastEl.remove());
+    }
+
+    function notifyError(prefix, e) {
+        const msg = (e && (e.message || e.toString())) || 'Unknown error';
+        showToast(`${prefix}: ${msg}`, 'danger');
+        console.error(prefix, e);
+    }
+
+    function openConfirm(message, onConfirm) {
+        confirmModalBody.textContent = message;
+        confirmCallback = onConfirm;
+        confirmModal.show();
+    }
+
+    confirmModalConfirm.addEventListener('click', () => {
+        confirmModal.hide();
+        if (typeof confirmCallback === 'function') {
+            const cb = confirmCallback;
+            confirmCallback = null;
+            cb();
+        }
+    });
+
+    function openRename(udid, currentName) {
+        renameModalUdid.value = udid;
+        renameModalInput.value = currentName || '';
+        renameModal.show();
+        setTimeout(() => renameModalInput.focus(), 200);
+    }
+
+    renameModalConfirm.addEventListener('click', async () => {
+        const newName = renameModalInput.value.trim();
+        const udid = renameModalUdid.value;
+        if (!newName) { showToast('Name cannot be empty', 'warning'); return; }
+        try {
+            await api.post('/api/devices/rename', { udid, name: newName });
+            renameModal.hide();
+            showToast('Device renamed', 'success');
+            refreshDevices();
+        } catch (e) {
+            notifyError('Rename failed', e);
+        }
+    });
+    renameModalInput.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') { e.preventDefault(); renameModalConfirm.click(); }
+    });
+
+    // --- Map ---
+
     function initMap() {
-        // Default view (will be updated when GPX loads)
-        map = L.map('map').setView([39.9042, 116.4074], 4); // Center on China
+        map = L.map('map').setView([39.9042, 116.4074], 4);
 
-        const tk = window.TIANDITU_KEY; // Fallback for development
+        const tk = window.TIANDITU_KEY;
+        // Protocol-relative URLs avoid mixed-content when page is HTTPS.
+        const vecUrl = `//t{s}.tianditu.gov.cn/vec_w/wmts?SERVICE=WMTS&REQUEST=GetTile&VERSION=1.0.0&LAYER=vec&STYLE=default&TILEMATRIXSET=w&FORMAT=tiles&TILEMATRIX={z}&TILEROW={y}&TILECOL={x}&tk=${tk}`;
+        const cvaUrl = `//t{s}.tianditu.gov.cn/cva_w/wmts?SERVICE=WMTS&REQUEST=GetTile&VERSION=1.0.0&LAYER=cva&STYLE=default&TILEMATRIXSET=w&FORMAT=tiles&TILEMATRIX={z}&TILEROW={y}&TILECOL={x}&tk=${tk}`;
 
-        // TianDiTu Vector Base Layer (vec_w)
-        const vecLayer = L.tileLayer(`http://t{s}.tianditu.gov.cn/vec_w/wmts?SERVICE=WMTS&REQUEST=GetTile&VERSION=1.0.0&LAYER=vec&STYLE=default&TILEMATRIXSET=w&FORMAT=tiles&TILEMATRIX={z}&TILEROW={y}&TILECOL={x}&tk=${tk}`, {
-            subdomains: ['0', '1', '2', '3', '4', '5', '6', '7'],
-            attribution: '&copy; <a href="http://www.tianditu.gov.cn">Tianditu</a>'
+        L.tileLayer(vecUrl, {
+            subdomains: ['0','1','2','3','4','5','6','7'],
+            attribution: '&copy; <a href="https://www.tianditu.gov.cn">Tianditu</a>'
         }).addTo(map);
-
-        // TianDiTu Vector Annotation Layer (cva_w) - Labels
-        const cvaLayer = L.tileLayer(`http://t{s}.tianditu.gov.cn/cva_w/wmts?SERVICE=WMTS&REQUEST=GetTile&VERSION=1.0.0&LAYER=cva&STYLE=default&TILEMATRIXSET=w&FORMAT=tiles&TILEMATRIX={z}&TILEROW={y}&TILECOL={x}&tk=${tk}`, {
-            subdomains: ['0', '1', '2', '3', '4', '5', '6', '7']
+        L.tileLayer(cvaUrl, {
+            subdomains: ['0','1','2','3','4','5','6','7']
         }).addTo(map);
+    }
+
+    function clearMapLayers() {
+        if (routeLayer) { map.removeLayer(routeLayer); routeLayer = null; }
+        if (traveledLayer) { map.removeLayer(traveledLayer); traveledLayer = null; }
+        if (markerLayer) { map.removeLayer(markerLayer); markerLayer = null; }
+        traveledLatLngs = [];
+        currentRoutePoints = [];
     }
 
     // --- WebSocket ---
 
     function initWebSocket() {
         const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-        const wsUrl = `${protocol}//${window.location.host}/ws/status`;
-        
-        ws = new WebSocket(wsUrl);
-
-        ws.onopen = () => {
-            console.log('WebSocket connected');
-        };
-
+        ws = new WebSocket(`${protocol}//${window.location.host}/ws/status`);
+        ws.onopen = () => console.log('WebSocket connected');
         ws.onmessage = (event) => {
-            const status = JSON.parse(event.data);
-            handleStatusUpdate(status);
+            try { handleStatusUpdate(JSON.parse(event.data)); }
+            catch (e) { console.error('Bad WS payload', e); }
         };
-
         ws.onclose = () => {
             console.log('WebSocket disconnected, reconnecting in 2s...');
             setTimeout(initWebSocket, 2000);
         };
-
-        ws.onerror = (error) => {
-            console.error('WebSocket error:', error);
-            ws.close();
-        };
+        ws.onerror = (error) => { console.error('WebSocket error:', error); ws.close(); };
     }
 
     // --- Devices ---
 
-    /**
-     * Fetches and displays the list of connected devices.
-     */
     async function refreshDevices() {
+        refreshDevicesBtn.disabled = true;
+        refreshDevicesSpinner.classList.remove('d-none');
         try {
-            const res = await axios.get('/api/devices');
+            const data = await api.get('/api/devices');
             deviceListBody.innerHTML = '';
 
-            if (res.data.length === 0) {
-                deviceListBody.innerHTML = '<tr><td colspan="4" class="text-center text-muted">No devices found. Click Scan.</td></tr>';
+            if (!data.length) {
+                deviceListBody.innerHTML =
+                    '<tr><td colspan="4" class="text-center text-muted">No devices found. Click Scan.</td></tr>';
                 return;
             }
 
-            res.data.forEach(dev => {
+            for (const dev of data) {
                 const tr = document.createElement('tr');
-                const displayName = dev.name;
-                const realNameInfo = dev.real_name && dev.real_name !== dev.name ?
-                    `<div class="real-name"><i class="bi bi-phone"></i> ${dev.real_name}</div>` : '';
+                const realNameInfo = dev.real_name && dev.real_name !== dev.name
+                    ? `<div class="real-name"><i class="bi bi-phone"></i> </div>` : '';
 
-                // Device type icon and badge
                 const deviceIcon = dev.device_type === 'iOS' ? 'bi-apple' : 'bi-android2';
                 const deviceBadgeClass = dev.device_type === 'iOS' ? 'text-bg-dark' : 'text-bg-success';
 
-                // Connection type formatting
-                let connTypeDisplay = dev.connection_type.toUpperCase();
+                let connTypeDisplay = (dev.connection_type || '').toUpperCase();
                 let connBadgeClass = 'text-bg-secondary';
                 if (dev.connection_type === 'wifi' || dev.connection_type === 'rsd') {
-                    connBadgeClass = 'text-bg-info';
-                    connTypeDisplay = 'RSD';
+                    connBadgeClass = 'text-bg-info'; connTypeDisplay = 'RSD';
                 } else if (dev.connection_type === 'usb') {
                     connBadgeClass = 'text-bg-primary';
                 } else if (dev.connection_type === 'adb') {
@@ -123,14 +234,16 @@ document.addEventListener('DOMContentLoaded', () => {
                 }
 
                 tr.innerHTML = `
-                    <td><input type="checkbox" class="dev-check" value="${dev.udid}"></td>
+                    <td><input type="checkbox" class="dev-check" aria-label="Select device"></td>
                     <td>
                         <div class="d-flex align-items-center">
                             <span class="device-name"></span>
-                            <i class="bi bi-pencil-square rename-btn" title="Rename"></i>
+                            <button type="button" class="rename-btn" title="Rename" aria-label="Rename device">
+                                <i class="bi bi-pencil-square"></i>
+                            </button>
                         </div>
                         ${realNameInfo}
-                        <div class="real-name text-muted small device-id">ID: ${dev.udid}</div>
+                        <div class="real-name text-muted small device-id">ID: <span class="dev-id"></span></div>
                         <div class="device-badges">
                             <span class="badge ${deviceBadgeClass} me-1">
                                 <i class="bi ${deviceIcon}"></i> ${dev.device_type}
@@ -148,71 +261,44 @@ document.addEventListener('DOMContentLoaded', () => {
                     </td>
                 `;
 
-                const nameSpan = tr.querySelector('.device-name');
-                nameSpan.textContent = displayName;
+                tr.querySelector('.device-name').textContent = dev.name;
+                tr.querySelector('.dev-id').textContent = dev.udid;
+                if (realNameInfo) {
+                    tr.querySelector('.real-name i').insertAdjacentText('afterend', ' ' + dev.real_name);
+                }
 
-                const renameBtn = tr.querySelector('.rename-btn');
-                renameBtn.dataset.udid = dev.udid;
-                renameBtn.dataset.name = displayName;
-                renameBtn.addEventListener('click', () => {
-                    renameDevice(renameBtn.dataset.udid, renameBtn.dataset.name);
-                });
+                const cb = tr.querySelector('.dev-check');
+                cb.value = dev.udid;
+                cb.addEventListener('change', updateSelectAllCheckbox);
 
-                // Add event listener to device checkbox
-                const deviceCheckbox = tr.querySelector('.dev-check');
-                deviceCheckbox.addEventListener('change', updateSelectAllCheckbox);
+                tr.querySelector('.rename-btn').addEventListener('click', () => openRename(dev.udid, dev.name));
 
                 deviceListBody.appendChild(tr);
-            });
-            
-            // Update select-all checkbox state after loading devices
+            }
+
             updateSelectAllCheckbox();
         } catch (e) {
-            console.error(e);
+            notifyError('Failed to load devices', e);
+        } finally {
+            refreshDevicesBtn.disabled = false;
+            refreshDevicesSpinner.classList.add('d-none');
         }
     }
 
-    /**
-     * Prompts the user to rename a device and sends the request to the server.
-     * @param {string} udid - The UDID of the device to rename.
-     * @param {string} currentName - The current name of the device.
-     */
-    async function renameDevice(udid, currentName) {
-        const newName = prompt('Enter new name for device:', currentName);
-        if (newName && newName.trim() !== '') {
-            try {
-                await axios.post('/api/devices/rename', {
-                    udid: udid,
-                    name: newName
-                });
-                refreshDevices();
-            } catch (e) {
-                alert('Failed to rename: ' + (e.response?.data?.error || e.message));
-            }
-        }
-    }
-
-    /**
-     * Toggles the checked state of all device checkboxes.
-     */
     function toggleSelectAll() {
         document.querySelectorAll('.dev-check').forEach(c => c.checked = selectAllCheckbox.checked);
     }
 
-    /**
-     * Updates the select-all checkbox state based on individual device checkboxes.
-     */
     function updateSelectAllCheckbox() {
-        const allCheckboxes = document.querySelectorAll('.dev-check');
-        const checkedCheckboxes = document.querySelectorAll('.dev-check:checked');
-        
-        if (allCheckboxes.length === 0) {
+        const all = document.querySelectorAll('.dev-check');
+        const checked = document.querySelectorAll('.dev-check:checked');
+        if (!all.length) {
             selectAllCheckbox.checked = false;
             selectAllCheckbox.indeterminate = false;
-        } else if (checkedCheckboxes.length === allCheckboxes.length) {
+        } else if (checked.length === all.length) {
             selectAllCheckbox.checked = true;
             selectAllCheckbox.indeterminate = false;
-        } else if (checkedCheckboxes.length > 0) {
+        } else if (checked.length > 0) {
             selectAllCheckbox.checked = false;
             selectAllCheckbox.indeterminate = true;
         } else {
@@ -221,115 +307,80 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
-    // --- Files & Metadata ---
+    // --- Files ---
 
-    /**
-     * Uploads the selected GPX file to the server.
-     */
     async function uploadGpx() {
         if (!gpxUploadInput.files[0]) return;
         const formData = new FormData();
         formData.append('file', gpxUploadInput.files[0]);
+        uploadGpxBtn.disabled = true;
+        uploadGpxSpinner.classList.remove('d-none');
         try {
-            await axios.post('/api/upload', formData);
-            loadFileList();
+            await api.upload('/api/upload', formData);
+            showToast('Upload successful', 'success');
             gpxUploadInput.value = '';
-            updateFileInputLabel(); // Reset label
+            updateFileInputLabel();
+            await loadFileList();
         } catch (e) {
-            alert('Upload failed');
+            notifyError('Upload failed', e);
+        } finally {
+            uploadGpxBtn.disabled = false;
+            uploadGpxSpinner.classList.add('d-none');
         }
     }
 
-    /**
-     * Updates the file input display text to show the selected filename.
-     */
     function updateFileInputLabel() {
-        if (gpxUploadInput.files.length > 0) {
-            gpxUploadLabel.textContent = gpxUploadInput.files[0].name;
-        } else {
-            gpxUploadLabel.textContent = 'No file chosen';
-        }
+        gpxUploadLabel.textContent = gpxUploadInput.files.length > 0
+            ? gpxUploadInput.files[0].name
+            : 'No file chosen';
     }
 
-    /**
-     * Fetches the list of available GPX files and populates the select dropdown.
-     */
     async function loadFileList() {
         try {
-            const res = await axios.get('/api/gpx_files');
+            const data = await api.get('/api/gpx_files');
             const current = gpxSelect.value;
             gpxSelect.innerHTML = '<option value="">-- Select a file --</option>';
+            fileCountBadge.textContent = data.length;
 
-            // Update file count badge
-            fileCountBadge.textContent = res.data.length;
-
-            // Load each file with metadata
-            for (const f of res.data) {
-                try {
-                    const detailRes = await axios.get(`/api/gpx_files/${f}/details`);
-                    const data = detailRes.data;
-                    const opt = document.createElement('option');
-                    opt.value = f;
-
-                    // Format metadata
-                    const distKm = (data.total_distance / 1000).toFixed(2);
-                    const durMin = (data.total_duration / 60).toFixed(0);
-                    const pts = data.point_count;
-
-                    opt.text = `${f} (${distKm}km · ${durMin}min · ${pts}pts)`;
-                    gpxSelect.appendChild(opt);
-                } catch (e) {
-                    // Fallback if metadata fails
-                    const opt = document.createElement('option');
-                    opt.value = f;
-                    opt.text = f;
-                    gpxSelect.appendChild(opt);
+            for (const entry of data) {
+                const opt = document.createElement('option');
+                opt.value = entry.filename;
+                if (entry.error || entry.point_count === undefined) {
+                    opt.textContent = entry.filename;
+                } else {
+                    const distKm = (entry.total_distance / 1000).toFixed(2);
+                    const durMin = (entry.total_duration / 60).toFixed(0);
+                    opt.textContent = `${entry.filename} (${distKm}km · ${durMin}min · ${entry.point_count}pts)`;
                 }
+                gpxSelect.appendChild(opt);
             }
             gpxSelect.value = current;
-
-            // Enable/disable delete button
             deleteFileBtn.disabled = !gpxSelect.value;
-        } catch (error) {
-            console.error('Failed to load file list:', error);
+        } catch (e) {
+            notifyError('Failed to load file list', e);
         }
     }
 
-    /**
-     * Deletes the currently selected GPX file.
-     */
-    async function deleteSelectedFile() {
+    function deleteSelectedFile() {
         const filename = gpxSelect.value;
         if (!filename) return;
-
-        if (!confirm(`Delete "${filename}"?`)) return;
-
-        try {
-            await axios.delete(`/api/gpx_files/${filename}`);
-            await loadFileList();
-            // Clear metadata and map if deleted file was selected
-            routeMetadataDiv.classList.add('d-none');
-            if (routeLayer) map.removeLayer(routeLayer);
-            if (markerLayer) map.removeLayer(markerLayer);
-        } catch (e) {
-            alert('Delete failed: ' + (e.response?.data?.error || e.message));
-        }
+        openConfirm(`Delete "${filename}"?`, async () => {
+            try {
+                await api.del(`/api/gpx_files/${encodeURIComponent(filename)}`);
+                await loadFileList();
+                routeMetadataDiv.classList.add('d-none');
+                clearMapLayers();
+                showToast('File deleted', 'success');
+            } catch (e) {
+                notifyError('Delete failed', e);
+            }
+        });
     }
-    
-    /**
-     * Handles the selection of a GPX file, fetching its details and displaying them.
-     */
+
     async function onGpxSelected() {
         const filename = gpxSelect.value;
-
-        // Enable/disable delete button
         deleteFileBtn.disabled = !filename;
-
-        // Clear map layers
-        if (routeLayer) map.removeLayer(routeLayer);
-        if (markerLayer) map.removeLayer(markerLayer);
-        routeLayer = null;
-        markerLayer = null;
+        clearMapLayers();
 
         if (!filename) {
             routeMetadataDiv.classList.add('d-none');
@@ -338,51 +389,37 @@ document.addEventListener('DOMContentLoaded', () => {
         }
 
         try {
-            const res = await axios.get(`/api/gpx_files/${filename}/details`);
-            const data = res.data;
-
+            const data = await api.get(`/api/gpx_files/${encodeURIComponent(filename)}/details`);
             routeMetadataDiv.classList.remove('d-none');
-            metadataDistance.innerText = (data.total_distance / 1000).toFixed(2) + ' km';
-            metadataPoints.innerText = data.point_count;
+            metadataDistance.textContent = (data.total_distance / 1000).toFixed(2) + ' km';
+            metadataPoints.textContent = data.point_count;
 
             currentGpxDuration = data.total_duration;
             const durMin = (currentGpxDuration / 60).toFixed(1);
-            metadataDuration.innerText = formatDuration(currentGpxDuration);
+            metadataDuration.textContent = formatDuration(currentGpxDuration);
 
-            // Draw Route on Map
-            if (data.points && data.points.length > 0) {
-                const latlngs = data.points.map(p => [p.lat, p.lon]);
-                routeLayer = L.polyline(latlngs, {
-                    color: 'red'
-                }).addTo(map);
-                map.fitBounds(routeLayer.getBounds(), {
-                    padding: [50, 50]
-                });
+            currentRoutePoints = data.points || [];
+            if (currentRoutePoints.length) {
+                const latlngs = currentRoutePoints.map(p => [p.lat, p.lon]);
+                routeLayer = L.polyline(latlngs, { color: 'red' }).addTo(map);
+                map.fitBounds(routeLayer.getBounds(), { padding: [50, 50] });
             }
 
-            // Set defaults
             speedMultiplierInput.value = 1.0;
             if (currentGpxDuration > 0) {
                 targetDurationInput.value = durMin;
                 speedMultiplierInput.disabled = false;
             } else {
-                // No timestamp case
-                metadataDuration.innerText = 'N/A';
-                targetDurationInput.value = 30; // Default 30 mins
-                speedMultiplierInput.value = 'N/A';
+                metadataDuration.textContent = 'N/A';
+                targetDurationInput.value = 30;
+                speedMultiplierInput.value = '';
                 speedMultiplierInput.disabled = true;
             }
-
         } catch (e) {
-            console.error(e);
+            notifyError('Failed to load GPX details', e);
         }
     }
-    
-    /**
-     * Formats a duration from seconds to a human-readable string (e.g., "1h 23m").
-     * @param {number} seconds - The duration in seconds.
-     * @returns {string} The formatted duration string.
-     */
+
     function formatDuration(seconds) {
         if (!seconds) return '0s';
         const h = Math.floor(seconds / 3600);
@@ -392,110 +429,77 @@ document.addEventListener('DOMContentLoaded', () => {
         return `${m}m ${s}s`;
     }
 
-    // --- Speed/Duration Sync ---
-    
-    /**
-     * Calculates and sets the speed multiplier based on the target duration.
-     */
+    // --- Speed/Duration sync ---
+
     function onTargetDurationChange() {
-        if (currentGpxDuration <= 0) return; // No base time to calc from
+        if (currentGpxDuration <= 0) return;
         const targetMin = parseFloat(targetDurationInput.value);
         if (targetMin > 0) {
-            const speed = (currentGpxDuration / 60) / targetMin;
-            speedMultiplierInput.value = speed.toFixed(2);
+            speedMultiplierInput.value = ((currentGpxDuration / 60) / targetMin).toFixed(2);
         }
     }
-    
-    /**
-     * Calculates and sets the target duration based on the speed multiplier.
-     */
+
     function onSpeedMultChange() {
         if (currentGpxDuration <= 0) return;
         const speed = parseFloat(speedMultiplierInput.value);
         if (speed > 0) {
-            const targetMin = (currentGpxDuration / 60) / speed;
-            targetDurationInput.value = targetMin.toFixed(1);
+            targetDurationInput.value = ((currentGpxDuration / 60) / speed).toFixed(1);
         }
     }
 
     // --- Control ---
-    
-    /**
-     * Toggles the simulation state between start/resume and pause.
-     */
+
     async function toggleSim() {
-        if (isRunning) {
-            // If running, action is PAUSE
-            await stopSim();
-        } else {
-            // If stopped, action is START or RESUME
-            await startSim();
-        }
+        if (isRunning) await stopSim();
+        else await startSim();
     }
-    
-    /**
-     * Starts or resumes the location simulation.
-     */
+
     async function startSim() {
         const filename = gpxSelect.value;
         const udids = Array.from(document.querySelectorAll('.dev-check:checked')).map(c => c.value);
         const loop = loopCheckbox.checked;
 
-        let payload = {
-            filename,
-            udids,
-            loop
-        };
+        if (!filename) { showToast('Select a GPX file', 'warning'); return; }
+        if (!udids.length) { showToast('Select at least one device', 'warning'); return; }
 
+        const payload = { filename, udids, loop };
         if (currentGpxDuration > 0) {
-            payload.speed = speedMultiplierInput.value;
+            payload.speed = parseFloat(speedMultiplierInput.value) || 1.0;
         } else {
             const targetMin = parseFloat(targetDurationInput.value);
-            if (!targetMin || targetMin <= 0) return alert('Please enter a valid target duration.');
+            if (!targetMin || targetMin <= 0) {
+                showToast('Please enter a valid target duration', 'warning');
+                return;
+            }
             payload.target_duration = targetMin * 60;
         }
 
-        if (!filename) return alert('Select a GPX file');
-        if (udids.length === 0) return alert('Select at least one device');
+        try {
+            await api.post('/api/start', payload);
+            traveledLatLngs = [];
+            if (traveledLayer) { map.removeLayer(traveledLayer); traveledLayer = null; }
+        } catch (e) {
+            notifyError('Failed to start', e);
+        }
+    }
 
-        try {
-            await axios.post('/api/start', payload);
-            // State update handled by WebSocket/polling
-        } catch (e) {
-            alert('Failed to start: ' + (e.response?.data?.error || e.message));
-        }
-    }
-    
-    /**
-     * Stops (pauses) the location simulation.
-     */
     async function stopSim() {
-        try {
-            await axios.post('/api/stop');
-        } catch (e) {
-            console.error(e);
-        }
+        try { await api.post('/api/stop'); }
+        catch (e) { notifyError('Failed to stop', e); }
     }
-    
-    /**
-     * Resets the simulation to the beginning.
-     */
+
     async function resetSim() {
         try {
-            await axios.post('/api/reset');
-            hasStarted = false; // Reset local state
-            if (markerLayer) {
-                map.removeLayer(markerLayer);
-                markerLayer = null;
-            }
+            await api.post('/api/reset');
+            hasStarted = false;
+            traveledLatLngs = [];
+            if (markerLayer) { map.removeLayer(markerLayer); markerLayer = null; }
+            if (traveledLayer) { map.removeLayer(traveledLayer); traveledLayer = null; }
         } catch (e) {
-            console.error(e);
+            notifyError('Failed to reset', e);
         }
     }
-    
-    /**
-     * Updates the UI elements based on the simulation state.
-     */
+
     function handleStatusUpdate(s) {
         const total = s.total_points || 0;
         const current = s.current_index || 0;
@@ -505,42 +509,55 @@ document.addEventListener('DOMContentLoaded', () => {
         if (current > 0) hasStarted = true;
         if (current === 0 && !running) hasStarted = false;
 
-        // Button States
         if (running) {
-            toggleSimulationBtn.innerText = 'Pause';
+            toggleSimulationBtn.textContent = 'Pause';
             toggleSimulationBtn.className = 'btn btn-warning flex-grow-1';
             resetSimulationBtn.disabled = false;
-            simulationStatus.innerText = 'Running';
+            simulationStatus.textContent = 'Running';
             simulationStatus.className = 'status-running';
         } else {
             resetSimulationBtn.disabled = !hasStarted;
             if (hasStarted && current < total) {
-                toggleSimulationBtn.innerText = 'Resume';
-                simulationStatus.innerText = 'Paused';
+                toggleSimulationBtn.textContent = 'Resume';
+                simulationStatus.textContent = 'Paused';
             } else {
-                toggleSimulationBtn.innerText = 'Start';
-                simulationStatus.innerText = 'Idle';
+                toggleSimulationBtn.textContent = 'Start';
+                simulationStatus.textContent = 'Idle';
             }
             toggleSimulationBtn.className = 'btn btn-success flex-grow-1';
             simulationStatus.className = 'status-stopped';
         }
 
-        // Progress Bar
         const pct = total > 0 ? (current / total) * 100 : 0;
         progressBar.style.width = pct + '%';
-        progressText.innerText = `${current} / ${total} points`;
+        progressText.textContent = `${current} / ${total} points`;
 
-        // Update Map Marker
         if (s.current_lat && s.current_lon) {
+            const latlng = [s.current_lat, s.current_lon];
             if (!markerLayer) {
-                markerLayer = L.marker([s.current_lat, s.current_lon]).addTo(map);
+                markerLayer = L.marker(latlng).addTo(map);
             } else {
-                markerLayer.setLatLng([s.current_lat, s.current_lon]);
+                markerLayer.setLatLng(latlng);
+            }
+            // Append to traveled trail (skip duplicates).
+            const last = traveledLatLngs[traveledLatLngs.length - 1];
+            if (!last || last[0] !== latlng[0] || last[1] !== latlng[1]) {
+                traveledLatLngs.push(latlng);
+                if (!traveledLayer) {
+                    traveledLayer = L.polyline(traveledLatLngs, {
+                        className: 'leaflet-traveled-path',
+                        color: '#22c55e',
+                        weight: 4,
+                        opacity: 0.85,
+                    }).addTo(map);
+                } else {
+                    traveledLayer.setLatLngs(traveledLatLngs);
+                }
             }
         }
     }
 
-    // --- Event Listeners ---
+    // --- Listeners ---
     refreshDevicesBtn.addEventListener('click', refreshDevices);
     selectAllCheckbox.addEventListener('click', toggleSelectAll);
     gpxUploadInput.addEventListener('change', updateFileInputLabel);
@@ -553,13 +570,13 @@ document.addEventListener('DOMContentLoaded', () => {
     toggleSimulationBtn.addEventListener('click', toggleSim);
     resetSimulationBtn.addEventListener('click', resetSim);
 
-    // --- Initial Load ---
+    // --- Init ---
     function initialize() {
         refreshDevices();
         loadFileList();
         initMap();
-        initWebSocket(); // Connect WebSocket
+        initWebSocket();
     }
-    
+
     initialize();
 });

@@ -6,6 +6,10 @@ import random
 import time
 from typing import Any, Dict, List, Optional
 
+# Anti-cheat jitter: Gaussian (normal) distribution with sigma ~2e-5 degrees
+# (≈2 m at the equator). Roughly 99.7% of samples fall within ±3σ ≈ ±6e-5°.
+JITTER_SIGMA_DEG = 2e-5
+
 from core.device_manager import DevicePool, IOSDevice
 from core.exceptions import (
     SimulationAlreadyRunningError,
@@ -201,11 +205,10 @@ class Simulator:
                     self.status["current_lat"] = lat
                     self.status["current_lon"] = lon
 
-                    # Broadcast location with simple jitter
-                    # TODO(Future): Move jitter logic to a separate helper or config.
+                    # Broadcast location with Gaussian jitter (anti-cheat).
                     for dev in devices:
-                        jitter_lat = lat + random.uniform(-0.00002, 0.00002)
-                        jitter_lon = lon + random.uniform(-0.00002, 0.00002)
+                        jitter_lat = lat + random.gauss(0, JITTER_SIGMA_DEG)
+                        jitter_lon = lon + random.gauss(0, JITTER_SIGMA_DEG)
                         await dev.set_location(jitter_lat, jitter_lon)
 
                     # Calculate sleep time
