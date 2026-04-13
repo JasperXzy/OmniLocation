@@ -191,7 +191,7 @@ raise ConfigurationError("Missing API key: TIANDITU_KEY", config_key="TIANDITU_K
 ```python
 from core.exceptions import ServiceUnavailableError
 
-raise ServiceUnavailableError("ADB Server", "Connection refused on port 5037")
+raise ServiceUnavailableError("Tunneld", "Daemon not reachable on port 49151")
 ```
 
 ## 全局错误处理器

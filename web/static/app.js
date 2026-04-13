@@ -220,8 +220,8 @@ document.addEventListener('DOMContentLoaded', () => {
                 const realNameInfo = dev.real_name && dev.real_name !== dev.name
                     ? `<div class="real-name"><i class="bi bi-phone"></i> </div>` : '';
 
-                const deviceIcon = dev.device_type === 'iOS' ? 'bi-apple' : 'bi-android2';
-                const deviceBadgeClass = dev.device_type === 'iOS' ? 'text-bg-dark' : 'text-bg-success';
+                const deviceIcon = 'bi-apple';
+                const deviceBadgeClass = 'text-bg-dark';
 
                 let connTypeDisplay = (dev.connection_type || '').toUpperCase();
                 let connBadgeClass = 'text-bg-secondary';
@@ -229,8 +229,6 @@ document.addEventListener('DOMContentLoaded', () => {
                     connBadgeClass = 'text-bg-info'; connTypeDisplay = 'RSD';
                 } else if (dev.connection_type === 'usb') {
                     connBadgeClass = 'text-bg-primary';
-                } else if (dev.connection_type === 'adb') {
-                    connBadgeClass = 'text-bg-warning';
                 }
 
                 tr.innerHTML = `

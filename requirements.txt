@@ -5,4 +5,3 @@ jinja2
 pymobiledevice3
 gpxpy
 python-dotenv
-pure-python-adb

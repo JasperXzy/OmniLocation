@@ -14,14 +14,6 @@ from pymobiledevice3.services.dvt.instruments.location_simulation import Locatio
 from pymobiledevice3.services.simulate_location import DtSimulateLocation
 from pymobiledevice3.usbmux import list_devices as list_ios_devices
 
-# Android Imports
-try:
-    from ppadb.client import Client as AdbClient
-    from ppadb.device import Device as PpadbDevice
-    ADB_AVAILABLE = True
-except ImportError:
-    ADB_AVAILABLE = False
-
 from core.exceptions import (
     DatabaseError,
     DeviceConnectionError,
@@ -31,8 +23,6 @@ from core.exceptions import (
 logger = logging.getLogger(__name__)
 
 DB_PATH = "devices.db"
-# Intent constants for Fake GPS location (com.lexa.fakegps)
-ANDROID_INTENT_ACTION = "com.lexa.fakegps.START"
 
 
 def init_db() -> None:
@@ -124,12 +114,12 @@ def update_device_info_in_db(
 
 
 class BaseDevice:
-    """Abstract base class representing a generic mobile device.
+    """Abstract base class representing a generic iOS device.
 
     Attributes:
         udid: The Unique Device Identifier.
         connected: Connection status flag.
-        connection_type: Type of connection ('usb', 'wifi', 'adb', or 'unknown').
+        connection_type: Type of connection ('usb', 'wifi', or 'unknown').
         real_name: Name retrieved from the device hardware.
         custom_name: Name assigned by the user.
     """
@@ -324,100 +314,17 @@ class IOSDevice(BaseDevice):
         self.connected = False
 
 
-class AndroidDevice(BaseDevice):
-    """Represents an Android device controlled via ADB and Fake GPS Joystick.
-    
-    Attributes:
-        serial: The ADB device serial number.
-        adb_client: An active ppadb Client instance.
-    """
-
-    def __init__(self, serial: str, adb_client: Any) -> None:
-        """Initializes the AndroidDevice.
-
-        Args:
-            serial: The ADB device serial number.
-            adb_client: An active ppadb Client instance.
-        """
-        super().__init__(udid=serial, name=f"Android ({serial[:8]}...)")
-        self.serial = serial
-        self.adb_client = adb_client
-        self._device: Any = None
-        self.connection_type = "adb"
-
-    async def connect(self) -> None:
-        """Connects to the Android device via ADB."""
-        try:
-            self._device = await asyncio.to_thread(
-                self.adb_client.device, self.serial
-            )
-            if not self._device:
-                raise ConnectionError(f"ADB device {self.serial} not found")
-
-            # Fetch real device model name
-            try:
-                props = await asyncio.to_thread(self._device.get_properties)
-                model = props.get("ro.product.model", "Unknown")
-                self.real_name = f"{model} ({self.serial})"
-                await asyncio.to_thread(
-                    update_device_info_in_db, self.udid, real_name=self.real_name
-                )
-            except Exception as e:
-                logger.warning("Could not fetch Android properties: %s", e)
-
-            self.connected = True
-            logger.info("Android device %s connected", self.serial)
-        except Exception as e:
-            self.connected = False
-            logger.error("Failed to connect to Android %s: %s", self.serial, e)
-            raise
-
-    async def set_location(self, lat: float, lon: float) -> None:
-        """Sets the location by sending a startservice intent to Fake GPS.
-
-        Args:
-            lat: Latitude.
-            lon: Longitude.
-        """
-        if not self._device:
-            return
-
-        try:
-            # Construct the broadcast command for com.lexa.fakegps
-            # Using --ed (double) for precision
-            cmd = (
-                f"am startservice -a {ANDROID_INTENT_ACTION} "
-                f"--ed lat {lat} --ed long {lon}"
-            )
-            await asyncio.to_thread(self._device.shell, cmd)
-        except Exception as e:
-            logger.error("Error setting location for Android %s: %s", self.serial, e)
-            self.connected = False
-
-    async def disconnect(self) -> None:
-        """Disconnects the device (logical disconnect)."""
-        self.connected = False
-
-
 class DevicePool:
-    """Manages a collection of connected devices (iOS + Android)."""
+    """Manages a collection of connected iOS devices."""
 
     def __init__(self) -> None:
         self.devices: Dict[str, BaseDevice] = {}
-        self.adb_client = None
         init_db()
-        
-        if ADB_AVAILABLE:
-            try:
-                self.adb_client = AdbClient(host="127.0.0.1", port=5037)
-            except Exception as e:
-                logger.warning("Failed to initialize ADB client: %s", e)
 
     async def scan_usb_devices(self) -> List[BaseDevice]:
-        """Scans for connected devices via USB, Tunneld, and ADB."""
+        """Scans for connected iOS devices via USB and Tunneld."""
         found_devices: List[BaseDevice] = []
 
-        # --- 1. iOS Scanning ---
         ios_devices = await list_ios_devices()
         tunnel_map: Dict[str, Tuple[str, int]] = {}
         try:
@@ -457,24 +364,6 @@ class DevicePool:
                     existing.connection_type = conn_type
                     existing.real_name, existing.custom_name = get_device_info_from_db(udid)
                     found_devices.append(existing)
-
-        # --- 2. Android Scanning ---
-        if self.adb_client:
-            try:
-                android_devs = await asyncio.to_thread(self.adb_client.devices)
-                for adev in android_devs:
-                    serial = adev.serial
-                    if serial not in self.devices:
-                        new_android = AndroidDevice(serial, self.adb_client)
-                        self.devices[serial] = new_android
-                        found_devices.append(new_android)
-                    else:
-                        existing_android = self.devices[serial]
-                        if isinstance(existing_android, AndroidDevice):
-                            existing_android.real_name, existing_android.custom_name = get_device_info_from_db(serial)
-                            found_devices.append(existing_android)
-            except Exception as e:
-                logger.debug("ADB scan failed: %s", e)
 
         return found_devices
 

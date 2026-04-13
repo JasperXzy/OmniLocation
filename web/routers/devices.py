@@ -24,7 +24,7 @@ async def list_devices(device_pool: DevicePool = Depends(get_device_pool)):
             'udid': d.udid,
             'name': d.name,
             'real_name': d.real_name,
-            'device_type': 'iOS' if d.__class__.__name__ == 'IOSDevice' else 'Android',
+            'device_type': 'iOS',
             'connection_type': d.connection_type,
             'connected': d.connected,
         }
