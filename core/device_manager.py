@@ -3,7 +3,7 @@
 import asyncio
 import logging
 import sqlite3
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 # iOS Imports
 from pymobiledevice3.exceptions import InvalidServiceError
@@ -23,6 +23,36 @@ from core.exceptions import (
 logger = logging.getLogger(__name__)
 
 DB_PATH = "devices.db"
+
+
+async def _fetch_tunnel_map() -> Dict[str, Dict[str, Any]]:
+    """Fetches the current Tunneld tunnel map keyed by UDID.
+
+    Tunneld exposes its registry over an HTTP endpoint via blocking
+    ``requests``, so we always offload it to a thread. Returns an empty dict
+    when Tunneld is unreachable so the caller can degrade to USB-only mode.
+    """
+    try:
+        # pylint: disable=import-outside-toplevel, protected-access
+        from pymobiledevice3.tunneld.api import _list_tunnels
+        tunnels: Dict[str, list] = await asyncio.to_thread(_list_tunnels)
+    except Exception as e:
+        logger.debug("Tunneld not reachable: %s", e)
+        return {}
+
+    result: Dict[str, Dict[str, Any]] = {}
+    for udid, entries in tunnels.items():
+        if not entries:
+            continue
+        info = entries[0]
+        if "tunnel-address" not in info or "tunnel-port" not in info:
+            continue
+        result[udid] = {
+            "host": info["tunnel-address"],
+            "port": int(info["tunnel-port"]),
+            "interface": info.get("interface"),
+        }
+    return result
 
 
 def init_db() -> None:
@@ -167,12 +197,20 @@ class BaseDevice:
 class IOSDevice(BaseDevice):
     """Represents an iOS device managed via pymobiledevice3.
 
-    Supports both legacy USB connections and iOS 17+ RSD (Remote Service Discovery)
-    connections over Tunneld.
+    Connection model
+    ----------------
+    * **RSD (preferred for iOS 17+)** — when Tunneld exposes a tunnel for this
+      UDID we use ``RemoteServiceDiscoveryService`` + ``DvtProvider`` +
+      ``LocationSimulation``. This is the only path that works on iOS 17+ and
+      it is independent of whether the device is physically wired or wireless.
+    * **Legacy usbmux (iOS < 17)** — only used as a fallback when no tunnel
+      exists. Opens a ``UsbmuxLockdownClient`` and the legacy
+      ``com.apple.dt.simulatelocation`` service via ``DtSimulateLocation``.
 
     Attributes:
-        serial: Device serial number (often same as UDID).
-        rsd_info: Tuple of (host, port) for RSD connections, if available.
+        serial: Device serial number (== UDID for modern usbmux).
+        rsd_info: Dict with ``host``/``port``/``interface`` for the Tunneld
+            tunnel, or ``None`` if the device is only reachable via usbmux.
     """
 
     def __init__(
@@ -180,98 +218,112 @@ class IOSDevice(BaseDevice):
         udid: str,
         serial: Optional[str] = None,
         connection_type: str = "usb",
-        rsd_info: Optional[Tuple[str, int]] = None,
+        rsd_info: Optional[Dict[str, Any]] = None,
     ) -> None:
         """Initializes the IOSDevice.
 
         Args:
             udid: The unique device identifier.
             serial: The device serial number. Defaults to udid if None.
-            connection_type: 'usb' or 'wifi'.
-            rsd_info: Optional tuple (host, port) for RSD connections.
+            connection_type: 'usb' or 'wifi' (display label only; the actual
+                transport is decided by the presence of ``rsd_info``).
+            rsd_info: Optional tunnel info dict. When set, RSD is used.
         """
         super().__init__(udid, name=f"iPhone ({udid[:8]}...)")
         self.serial = serial or udid
         self.connection_type = connection_type
         self.rsd_info = rsd_info
 
-        self._lockdown: Any = None
-        self._service: Any = None
-        self._dvt_context: Any = None
+        self._lockdown: Any = None       # UsbmuxLockdownClient OR RSDS
+        self._service: Any = None        # DtSimulateLocation OR LocationSimulation
+        self._dvt_context: Any = None    # DvtProvider (RSD path only)
+        self._location_ctx: Any = None   # LocationSimulation context handle
 
     async def connect(self) -> None:
-        """Connects to the iOS device and attempts to fetch its real name.
+        """Connects to the iOS device and fetches its real name.
+
+        Picks RSD when ``rsd_info`` is set, otherwise falls back to legacy
+        usbmux. Cleans up any partially-opened resources on failure.
 
         Raises:
             DeviceConnectionError: If connection fails.
         """
         try:
-            if self.connection_type == "wifi" and self.rsd_info:
+            if self.rsd_info is not None:
                 await self._connect_rsd()
             else:
                 await self._connect_usb()
-            
-            self.connected = True
-            logger.info("Device %s connected via %s", self.udid, self.connection_type)
 
-            # Fetch real name after successful connection
+            self.connected = True
+            logger.info(
+                "Device %s connected via %s",
+                self.udid,
+                "RSD" if self.rsd_info else "usbmux",
+            )
+
             await self._fetch_device_name()
 
         except Exception as e:
-            self.connected = False
             logger.error("Failed to connect to %s: %s", self.udid, e)
+            await self._teardown()
             raise DeviceConnectionError(self.udid, str(e))
 
-    async def _fetch_device_name(self) -> None:
-        """Fetches the device name from the Lockdown service."""
-        try:
-            if self._lockdown:
-                val = await asyncio.to_thread(self._lockdown.get_value, key="DeviceName")
-                if val:
-                    name_str = str(val)
-                    self.real_name = name_str
-                    await asyncio.to_thread(
-                        update_device_info_in_db, self.udid, real_name=name_str
-                    )
-                    logger.info("Fetched real name for %s: %s", self.udid, name_str)
-        except Exception as e:
-            logger.warning("Could not fetch device name for %s: %s", self.udid, e)
-
     async def _connect_rsd(self) -> None:
-        """Internal method to connect via Remote Service Discovery (RSD)."""
-        if not self.rsd_info:
-            raise ValueError("RSD info is missing.")
-
-        host, port = self.rsd_info
-        logger.info("Connecting via RSD: %s:%s", host, port)
-
-        rsd = RemoteServiceDiscoveryService((host, int(port)))
-        await rsd.connect()
-
-        self._lockdown = rsd
-        self._dvt_context = DvtProvider(rsd)
-        await self._dvt_context.__aenter__()
-        self._service = LocationSimulation(self._dvt_context)
-        await self._service.__aenter__()
-
-    async def _connect_usb(self) -> None:
-        """Internal method to connect via standard USB mux."""
-        logger.info("Connecting via USB: %s", self.serial)
-        self._lockdown = await asyncio.to_thread(
-            create_using_usbmux, serial=self.serial
+        """Opens RSD → DvtProvider → LocationSimulation."""
+        assert self.rsd_info is not None
+        host = self.rsd_info["host"]
+        port = self.rsd_info["port"]
+        interface = self.rsd_info.get("interface")
+        logger.info(
+            "Connecting via RSD: %s:%s (iface=%s)", host, port, interface,
         )
 
-        # Try legacy service first, then DVT
+        rsd = RemoteServiceDiscoveryService((host, port), name=interface)
+        await rsd.connect()
+        self._lockdown = rsd
+
+        self._dvt_context = DvtProvider(rsd)
+        await self._dvt_context.__aenter__()
+
+        self._location_ctx = LocationSimulation(self._dvt_context)
+        await self._location_ctx.__aenter__()
+        self._service = self._location_ctx
+
+    async def _connect_usb(self) -> None:
+        """Opens a usbmux lockdown + legacy DtSimulateLocation service.
+
+        Only viable for iOS < 17. On iOS 17+ this raises
+        ``DeviceConnectionError`` with a hint to start Tunneld.
+        """
+        logger.info("Connecting via usbmux: %s", self.serial)
+        self._lockdown = await create_using_usbmux(serial=self.serial)
+
         try:
-            self._service = await asyncio.to_thread(
-                DtSimulateLocation, self._lockdown
-            )
-        except InvalidServiceError:
-            logger.info("DtSimulateLocation not available, trying DVT...")
-            self._dvt_context = DvtProvider(self._lockdown)
-            await self._dvt_context.__aenter__()
-            self._service = LocationSimulation(self._dvt_context)
-            await self._service.__aenter__()
+            # DtSimulateLocation.__init__ is sync (just opens a lockdown service)
+            self._service = DtSimulateLocation(self._lockdown)
+        except InvalidServiceError as e:
+            raise DeviceConnectionError(
+                self.udid,
+                "Legacy simulate-location service unavailable (iOS 17+ "
+                "requires Tunneld). Start `pymobiledevice3 remote tunneld` "
+                "and rescan.",
+            ) from e
+
+    async def _fetch_device_name(self) -> None:
+        """Fetches the device name from lockdown / RSD ``get_value``."""
+        if self._lockdown is None:
+            return
+        try:
+            val = await self._lockdown.get_value(key="DeviceName")
+            if val:
+                name_str = str(val)
+                self.real_name = name_str
+                await asyncio.to_thread(
+                    update_device_info_in_db, self.udid, real_name=name_str,
+                )
+                logger.info("Fetched real name for %s: %s", self.udid, name_str)
+        except Exception as e:
+            logger.warning("Could not fetch device name for %s: %s", self.udid, e)
 
     async def set_location(self, lat: float, lon: float) -> None:
         """Sets the simulated location on the device.
@@ -294,24 +346,43 @@ class IOSDevice(BaseDevice):
             raise DeviceControlError(self.udid, "set location", str(e))
 
     async def disconnect(self) -> None:
-        """Stops simulation and closes connections."""
-        if self._service:
+        """Stops simulation and closes any connections we opened."""
+        # Best-effort clear() so the device drops the location override.
+        if self._service is not None:
             try:
                 await self._service.clear()
-            except Exception:
-                pass
-            if self._dvt_context:
-                try:
-                    await self._service.__aexit__(None, None, None)
-                except Exception:
-                    pass
+            except Exception as e:
+                logger.debug("clear() failed for %s: %s", self.udid, e)
+        await self._teardown()
+        self.connected = False
 
-        if self._dvt_context:
+    async def _teardown(self) -> None:
+        """Idempotent cleanup of RSD / DVT / lockdown resources."""
+        # 1. LocationSimulation (RSD path is an async ctx manager)
+        if self._location_ctx is not None:
+            try:
+                await self._location_ctx.__aexit__(None, None, None)
+            except Exception as e:
+                logger.debug("LocationSimulation aexit failed: %s", e)
+            self._location_ctx = None
+
+        # 2. DvtProvider (RSD path only)
+        if self._dvt_context is not None:
             try:
                 await self._dvt_context.__aexit__(None, None, None)
-            except Exception:
-                pass
-        self.connected = False
+            except Exception as e:
+                logger.debug("DvtProvider aexit failed: %s", e)
+            self._dvt_context = None
+
+        # 3. Lockdown / RSD socket
+        if self._lockdown is not None:
+            try:
+                await self._lockdown.close()
+            except Exception as e:
+                logger.debug("lockdown.close failed: %s", e)
+            self._lockdown = None
+
+        self._service = None
 
 
 class DevicePool:
@@ -322,48 +393,75 @@ class DevicePool:
         init_db()
 
     async def scan_usb_devices(self) -> List[BaseDevice]:
-        """Scans for connected iOS devices via USB and Tunneld."""
-        found_devices: List[BaseDevice] = []
+        """Discovers iOS devices via Tunneld AND usbmux, returning the union.
 
-        ios_devices = await list_ios_devices()
-        tunnel_map: Dict[str, Tuple[str, int]] = {}
+        Devices reachable via Tunneld are preferred (RSD path) regardless of
+        whether they are also visible to usbmuxd, since RSD is the only
+        viable route on iOS 17+.
+        """
+        # 1. Discover both sources concurrently.
+        tunnel_task = asyncio.create_task(_fetch_tunnel_map())
+        usbmux_task = asyncio.create_task(list_ios_devices())
         try:
-            # pylint: disable=import-outside-toplevel, protected-access
-            from pymobiledevice3.tunneld.api import _list_tunnels
-            tunnels_dict = await asyncio.to_thread(_list_tunnels)
-            for t_udid, t_list in tunnels_dict.items():
-                if t_list:
-                    tunnel_info = t_list[0]
-                    if "tunnel-address" in tunnel_info and "tunnel-port" in tunnel_info:
-                        tunnel_map[t_udid] = (
-                            tunnel_info["tunnel-address"],
-                            tunnel_info["tunnel-port"],
-                        )
-        except Exception:
-            pass
+            tunnel_map = await tunnel_task
+        except Exception as e:
+            logger.warning("Tunneld discovery failed: %s", e)
+            tunnel_map = {}
+        try:
+            mux_devices = await usbmux_task
+        except Exception as e:
+            logger.warning("usbmux discovery failed: %s", e)
+            mux_devices = []
 
-        for dev in ios_devices:
-            udid = dev.serial
+        # 2. Build a UDID → (serial, source) map so we can union both sources.
+        mux_by_udid: Dict[str, Any] = {}
+        for d in mux_devices:
+            mux_by_udid[d.serial] = d
+
+        all_udids: Set[str] = set(tunnel_map.keys()) | set(mux_by_udid.keys())
+        if not all_udids:
+            logger.debug("No iOS devices found via Tunneld or usbmux")
+
+        # 3. Materialize devices, preferring RSD whenever a tunnel exists.
+        found_devices: List[BaseDevice] = []
+        for udid in all_udids:
             rsd_info = tunnel_map.get(udid)
+            mux_dev = mux_by_udid.get(udid)
+            serial = mux_dev.serial if mux_dev is not None else udid
             conn_type = "wifi" if rsd_info else "usb"
 
-            if udid not in self.devices:
+            existing = self.devices.get(udid)
+            if existing is None or not isinstance(existing, IOSDevice):
                 new_dev = IOSDevice(
                     udid=udid,
-                    serial=dev.serial,
+                    serial=serial,
                     connection_type=conn_type,
                     rsd_info=rsd_info,
                 )
                 self.devices[udid] = new_dev
                 found_devices.append(new_dev)
-            else:
-                existing = self.devices[udid]
-                # Update existing
-                if isinstance(existing, IOSDevice):
-                    existing.rsd_info = rsd_info
-                    existing.connection_type = conn_type
-                    existing.real_name, existing.custom_name = get_device_info_from_db(udid)
-                    found_devices.append(existing)
+                continue
+
+            # Existing record — refresh transport metadata. If the connection
+            # parameters changed (e.g. tunneld came up while we were already
+            # holding a usbmux client), drop the stale connection so the next
+            # start() reconnects via the new path.
+            params_changed = (existing.rsd_info != rsd_info)
+            if params_changed and existing.connected:
+                logger.info(
+                    "Transport for %s changed (rsd=%s); dropping stale connection",
+                    udid, bool(rsd_info),
+                )
+                try:
+                    await existing.disconnect()
+                except Exception as e:
+                    logger.debug("Stale-disconnect failed for %s: %s", udid, e)
+
+            existing.rsd_info = rsd_info
+            existing.connection_type = conn_type
+            existing.serial = serial
+            existing.real_name, existing.custom_name = get_device_info_from_db(udid)
+            found_devices.append(existing)
 
         return found_devices
 
