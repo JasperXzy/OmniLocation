@@ -102,4 +102,3 @@ class GPXHandler:
         except Exception as e:
             logger.error("Error parsing GPX file: %s", e)
             raise GPXParseError(str(self.file_path), str(e))
-            raise

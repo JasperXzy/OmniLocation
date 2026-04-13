@@ -77,18 +77,31 @@ class Simulator:
             raise SimulationAlreadyRunningError()
 
         self._active_devices = []  # Reset active devices list
-        for udid in udids:
-            dev = self.device_pool.get_device(udid)
-            if dev:
-                if not dev.connected:
-                    try:
-                        await dev.connect()
-                    except Exception as e:
-                        logger.error("Could not connect to %s, skipping. Error: %s", udid, e)
-                        raise DeviceConnectionError(udid, str(e))
-                self._active_devices.append(dev)
-            else:
-                logger.warning("Device %s not found in pool.", udid)
+        try:
+            for udid in udids:
+                dev = self.device_pool.get_device(udid)
+                if dev:
+                    if not dev.connected:
+                        try:
+                            await dev.connect()
+                        except Exception as e:
+                            logger.error("Could not connect to %s, skipping. Error: %s", udid, e)
+                            raise DeviceConnectionError(udid, str(e))
+                    self._active_devices.append(dev)
+                else:
+                    logger.warning("Device %s not found in pool.", udid)
+        except Exception:
+            # Roll back any devices we already connected before the failure.
+            for dev in self._active_devices:
+                try:
+                    await dev.disconnect()
+                except Exception as cleanup_err:
+                    logger.error(
+                        "Error disconnecting %s during rollback: %s",
+                        dev.udid, cleanup_err,
+                    )
+            self._active_devices = []
+            raise
 
         if not self._active_devices:
             logger.error("No valid devices available for simulation.")
@@ -113,14 +126,15 @@ class Simulator:
         """Stops the currently running simulation (pauses)."""
         self.active = False
         self._update_status(running=False)
-        
-        if self.current_task:
-            self.current_task.cancel()
+
+        task = self.current_task
+        self.current_task = None
+        if task and not task.done():
+            task.cancel()
             try:
-                await self.current_task
+                await task
             except asyncio.CancelledError:
                 pass
-            self.current_task = None
         logger.info("Simulation stopped (paused).")
 
     async def reset(self) -> None:
@@ -220,8 +234,16 @@ class Simulator:
                 if not loop_track:
                     break
 
+        except asyncio.CancelledError:
+            # Propagated by stop(); leave state as stop() set it.
+            raise
         except Exception as e:
             logger.error("Simulation loop encountered an error: %s", e)
         finally:
             self.active = False
             self.status["running"] = False
+            # If the loop ended on its own (not via stop()), drop the task ref
+            # so future stop()/start() calls see a clean state machine.
+            current = asyncio.current_task()
+            if self.current_task is current:
+                self.current_task = None

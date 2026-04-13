@@ -223,24 +223,26 @@ class IOSDevice(BaseDevice):
             
             self.connected = True
             logger.info("Device %s connected via %s", self.udid, self.connection_type)
-            
+
             # Fetch real name after successful connection
-            self._fetch_device_name()
+            await self._fetch_device_name()
 
         except Exception as e:
             self.connected = False
             logger.error("Failed to connect to %s: %s", self.udid, e)
             raise DeviceConnectionError(self.udid, str(e))
 
-    def _fetch_device_name(self) -> None:
+    async def _fetch_device_name(self) -> None:
         """Fetches the device name from the Lockdown service."""
         try:
             if self._lockdown:
-                val = self._lockdown.get_value(key="DeviceName")
+                val = await asyncio.to_thread(self._lockdown.get_value, key="DeviceName")
                 if val:
                     name_str = str(val)
                     self.real_name = name_str
-                    update_device_info_in_db(self.udid, real_name=name_str)
+                    await asyncio.to_thread(
+                        update_device_info_in_db, self.udid, real_name=name_str
+                    )
                     logger.info("Fetched real name for %s: %s", self.udid, name_str)
         except Exception as e:
             logger.warning("Could not fetch device name for %s: %s", self.udid, e)
@@ -265,11 +267,15 @@ class IOSDevice(BaseDevice):
     async def _connect_usb(self) -> None:
         """Internal method to connect via standard USB mux."""
         logger.info("Connecting via USB: %s", self.serial)
-        self._lockdown = create_using_usbmux(serial=self.serial)
+        self._lockdown = await asyncio.to_thread(
+            create_using_usbmux, serial=self.serial
+        )
 
         # Try legacy service first, then DVT
         try:
-            self._service = DtSimulateLocation(self._lockdown)
+            self._service = await asyncio.to_thread(
+                DtSimulateLocation, self._lockdown
+            )
         except InvalidServiceError:
             logger.info("DtSimulateLocation not available, trying DVT...")
             self._dvt_context = DvtProvider(self._lockdown)
@@ -342,15 +348,20 @@ class AndroidDevice(BaseDevice):
     async def connect(self) -> None:
         """Connects to the Android device via ADB."""
         try:
-            self._device = self.adb_client.device(self.serial)
+            self._device = await asyncio.to_thread(
+                self.adb_client.device, self.serial
+            )
             if not self._device:
                 raise ConnectionError(f"ADB device {self.serial} not found")
-            
+
             # Fetch real device model name
             try:
-                model = self._device.get_properties().get("ro.product.model", "Unknown")
+                props = await asyncio.to_thread(self._device.get_properties)
+                model = props.get("ro.product.model", "Unknown")
                 self.real_name = f"{model} ({self.serial})"
-                update_device_info_in_db(self.udid, real_name=self.real_name)
+                await asyncio.to_thread(
+                    update_device_info_in_db, self.udid, real_name=self.real_name
+                )
             except Exception as e:
                 logger.warning("Could not fetch Android properties: %s", e)
 
@@ -378,7 +389,7 @@ class AndroidDevice(BaseDevice):
                 f"am startservice -a {ANDROID_INTENT_ACTION} "
                 f"--ed lat {lat} --ed long {lon}"
             )
-            self._device.shell(cmd)
+            await asyncio.to_thread(self._device.shell, cmd)
         except Exception as e:
             logger.error("Error setting location for Android %s: %s", self.serial, e)
             self.connected = False
@@ -412,7 +423,7 @@ class DevicePool:
         try:
             # pylint: disable=import-outside-toplevel, protected-access
             from pymobiledevice3.tunneld.api import _list_tunnels
-            tunnels_dict = _list_tunnels()
+            tunnels_dict = await asyncio.to_thread(_list_tunnels)
             for t_udid, t_list in tunnels_dict.items():
                 if t_list:
                     tunnel_info = t_list[0]
@@ -450,7 +461,7 @@ class DevicePool:
         # --- 2. Android Scanning ---
         if self.adb_client:
             try:
-                android_devs = self.adb_client.devices()
+                android_devs = await asyncio.to_thread(self.adb_client.devices)
                 for adev in android_devs:
                     serial = adev.serial
                     if serial not in self.devices:
